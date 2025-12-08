@@ -255,8 +255,8 @@ vercel
 Vercel 대시보드 → Settings → Environment Variables:
 
 ```
-VITE_SUPABASE_URL=https://pzcninyziugoqkzqauxe.supabase.co
-VITE_SUPABASE_PUBLISHABLE_KEY=your_anon_key
+NEXT_PUBLIC_SUPABASE_URL=https://pzcninyziugoqkzqauxe.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your_anon_key
 ```
 
 ### 3. 프로덕션 도메인 CORS 설정

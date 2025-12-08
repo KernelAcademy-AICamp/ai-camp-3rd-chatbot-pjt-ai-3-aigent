@@ -114,7 +114,7 @@ Handles data export to Excel and PDF formats using `xlsx` and `jspdf` libraries.
 - Custom routes must be added ABOVE the `*` catch-all route in `App.tsx`
 
 ### Path Aliases
-Uses `@` alias for `src/` directory (configured in `vite.config.ts` and `tsconfig.json`):
+Uses `@` alias for `src/` directory (configured in `tsconfig.json`):
 ```typescript
 import { supabase } from "@/integrations/supabase/client";
 ```
@@ -134,9 +134,8 @@ import { supabase } from "@/integrations/supabase/client";
 
 Required in `.env`:
 ```
-VITE_SUPABASE_PROJECT_ID=
-VITE_SUPABASE_PUBLISHABLE_KEY=
-VITE_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+NEXT_PUBLIC_SUPABASE_URL=
 ```
 
 Edge functions require additional env vars (set in Supabase dashboard):
