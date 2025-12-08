@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Package, Loader2, Mail, Lock, User } from "lucide-react";
+import { Package, Loader2, Mail, Lock, User, Sparkles } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -19,8 +19,8 @@ const Auth = () => {
   const [displayName, setDisplayName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
-  
-  const { signIn, signUp, isAuthenticated, isLoading } = useAuth();
+
+  const { signIn, signUp, demoLogin, isAuthenticated, isLoading } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -182,8 +182,8 @@ const Auth = () => {
                 )}
               </div>
 
-              <Button 
-                type="submit" 
+              <Button
+                type="submit"
                 className="w-full bg-gradient-to-r from-primary to-accent hover:opacity-90"
                 disabled={isSubmitting}
               >
@@ -196,6 +196,35 @@ const Auth = () => {
                 )}
               </Button>
             </form>
+
+            {/* Divider */}
+            <div className="relative my-6">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-border/50"></div>
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-card px-2 text-muted-foreground">또는</span>
+              </div>
+            </div>
+
+            {/* Demo Login Button */}
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full gap-2 border-primary/30 hover:bg-primary/10"
+              onClick={() => {
+                demoLogin();
+                toast.success("데모 모드로 로그인했습니다!");
+                navigate("/");
+              }}
+            >
+              <Sparkles className="w-4 h-4" />
+              데모 모드로 체험하기
+            </Button>
+
+            <p className="text-xs text-muted-foreground text-center mt-3">
+              회원가입 없이 모든 기능을 체험해보세요
+            </p>
 
             <div className="mt-6 text-center">
               <button

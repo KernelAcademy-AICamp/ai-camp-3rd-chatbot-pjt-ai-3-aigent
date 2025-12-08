@@ -73,10 +73,15 @@ const mockKeywords = [{
   score: 82
 }];
 import { MessageSquare } from "lucide-react";
+import { Rocket } from "lucide-react";
 const navItems = [{
   id: "dashboard",
   label: "대시보드",
   icon: LayoutDashboard
+}, {
+  id: "sourcing",
+  label: "소싱 도우미",
+  icon: Rocket
 }, {
   id: "analysis",
   label: "트렌드 분석",
@@ -296,6 +301,18 @@ const Index = () => {
       feePercent: fee / total * 100
     };
   }, [costPrice, shippingCost, calculation.fee]);
+  // Dashboard keyword input
+  const [dashboardKeyword, setDashboardKeyword] = useState("");
+
+  const handleDashboardAnalyze = () => {
+    const keywordToAnalyze = dashboardKeyword.trim();
+    if (keywordToAnalyze) {
+      handleKeywordClick(keywordToAnalyze);
+    } else {
+      toast.error("분석할 키워드를 입력해주세요.");
+    }
+  };
+
   const renderDashboard = () => <>
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -303,11 +320,37 @@ const Index = () => {
           <h1 className="text-2xl font-bold">쿠팡 대시보드</h1>
           <p className="text-muted-foreground text-sm">AI 기반 상품 트렌드 분석</p>
         </div>
-        <Button className="gap-2 bg-gradient-to-r from-primary to-accent hover:opacity-90">
-          <Play className="w-4 h-4" />
-          분석 시작
-        </Button>
       </div>
+
+      {/* Keyword Search */}
+      <Card className="mb-6 bg-card/60 border-border/50">
+        <CardContent className="p-4">
+          <div className="flex gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+              <Input
+                placeholder="분석할 키워드를 입력하세요 (예: 무선 이어폰, 캠핑용품)"
+                value={dashboardKeyword}
+                onChange={(e) => setDashboardKeyword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleDashboardAnalyze()}
+                className="pl-10 bg-secondary/50"
+              />
+            </div>
+            <Button
+              onClick={handleDashboardAnalyze}
+              disabled={isAnalyzing || !dashboardKeyword.trim()}
+              className="gap-2 bg-gradient-to-r from-primary to-accent hover:opacity-90"
+            >
+              {isAnalyzing ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              AI 분석
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">
@@ -1106,7 +1149,13 @@ const Index = () => {
           {navItems.map(item => {
           const Icon = item.icon;
           const isActive = currentPage === item.id;
-          return <button key={item.id} onClick={() => setCurrentPage(item.id)} className={cn("w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors", isActive ? "bg-primary/10 text-primary border border-primary/20" : "text-muted-foreground hover:bg-secondary")}>
+          return <button key={item.id} onClick={() => {
+            if (item.id === "sourcing") {
+              navigate("/sourcing");
+            } else {
+              setCurrentPage(item.id);
+            }
+          }} className={cn("w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors", isActive ? "bg-primary/10 text-primary border border-primary/20" : "text-muted-foreground hover:bg-secondary")}>
                 <Icon className="w-5 h-5" />
                 {item.label}
               </button>;
