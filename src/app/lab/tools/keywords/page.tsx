@@ -1,6 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  GrowthScoreComparisonChart,
+  TimeSeriesForecastChart,
+  OverallScoreRadarChart,
+  RisingKeywordsSummary,
+  SeasonalityChart,
+} from "@/components/charts/MLTrendCharts";
 
 const CATEGORY_OPTIONS = [
   { id: "50000000", label: "패션의류" },
@@ -38,6 +45,45 @@ const AGE_OPTIONS = [
   "60+",
 ] as const;
 
+type TrendAnalysisResult = {
+  linearRegression: {
+    slope: number;
+    intercept: number;
+    rSquared: number;
+    trendDirection: string;
+    predictedNext: number;
+  };
+  exponentialSmoothing: {
+    smoothedValues: number[];
+    lastSmoothed: number;
+    trend: number;
+  };
+  holtWinters: {
+    level: number;
+    trend: number;
+    seasonalFactors: number[];
+    forecast: number[];
+    seasonalStrength: number;
+  };
+  mannKendall: {
+    tau: number;
+    pValue: number;
+    significant: boolean;
+    trendDescription: string;
+  };
+  volatility: {
+    standardDeviation: number;
+    coefficientOfVariation: number;
+    volatilityLevel: string;
+  };
+  overallScore: {
+    growthScore: number;
+    stabilityScore: number;
+    seasonalityScore: number;
+    recommendation: string;
+  };
+};
+
 type KeywordMetrics = {
   keyword: string;
   periods: number;
@@ -46,6 +92,7 @@ type KeywordMetrics = {
   prevAvgRatio: number | null;
   growthRatio: number | null;
   peakMonths: number[];
+  trendAnalysis?: TrendAnalysisResult;
 };
 
 type ApiResponse = {
@@ -63,6 +110,25 @@ type ApiResponse = {
     }[]
   >;
   analysis: string | null;
+  mlAnalysis?: {
+    risingKeywords: {
+      keyword: string;
+      growthScore: number;
+      stabilityScore: number;
+      recommendation: string;
+      trendDirection: string;
+      mannKendall: {
+        significant: boolean;
+        direction: string;
+      };
+      forecast: number[];
+    }[];
+    sortedByGrowth: {
+      keyword: string;
+      growthScore: number;
+      recommendation: string;
+    }[];
+  };
 };
 
 export default function KeywordToolsPage() {
@@ -624,6 +690,54 @@ export default function KeywordToolsPage() {
                 </p>
               </div>
             )}
+
+            {/* 5. ML 시계열 분석 시각화 */}
+            <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
+              <h2 className="text-sm font-semibold text-slate-900 mb-2">
+                5. ML 시계열 분석 시각화
+              </h2>
+              <p className="text-[11px] text-slate-500 mb-4">
+                선형회귀, 지수평활법, Holt-Winters, Mann-Kendall 검정 등 시계열 머신러닝 모델을 적용한 분석 결과입니다.
+                성장점수가 60점 이상인 키워드를 &quot;상승추세&quot;로 분류합니다.
+              </p>
+
+              <div className="space-y-6">
+                {/* 상승추세 키워드 요약 */}
+                <RisingKeywordsSummary metrics={result.metrics} />
+
+                {/* 성장점수 비교 차트 */}
+                <GrowthScoreComparisonChart metrics={result.metrics} />
+
+                {/* 종합 레이더 차트 */}
+                <OverallScoreRadarChart metrics={result.metrics} />
+
+                {/* 계절성 차트 */}
+                <SeasonalityChart metrics={result.metrics} />
+
+                {/* 개별 키워드 시계열 + 예측 차트 */}
+                <div className="space-y-4">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    키워드별 시계열 분석 & 예측
+                  </h3>
+                  {Object.values(result.metrics)
+                    .filter((m) => m.trendAnalysis)
+                    .sort(
+                      (a, b) =>
+                        (b.trendAnalysis?.overallScore.growthScore ?? 0) -
+                        (a.trendAnalysis?.overallScore.growthScore ?? 0)
+                    )
+                    .map((m) => (
+                      <TimeSeriesForecastChart
+                        key={m.keyword}
+                        keyword={m.keyword}
+                        series={result.series[m.keyword] ?? []}
+                        metrics={m}
+                        timeUnit={result.timeUnit}
+                      />
+                    ))}
+                </div>
+              </div>
+            </div>
           </section>
         )}
 
