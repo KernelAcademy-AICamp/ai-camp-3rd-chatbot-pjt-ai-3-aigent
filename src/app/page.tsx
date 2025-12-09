@@ -1,9 +1,138 @@
 "use client";
 
 import { ArrowRight, LineChart, Sparkles, Target } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { useEffect, useState } from "react";
+import {
+  GrowthScoreComparisonChart,
+  TimeSeriesForecastChart,
+} from "@/components/charts/MLTrendCharts";
+import type { TrendAnalysisResult } from "@/lib/timeseries-analysis";
 
 const defaultFocusTags: string[] = [];
+
+// 랜딩 페이지에서 사용하는 데모용 목데이터 (실제 API 호출 없이 시각화만 보여주기 위함)
+const demoTrendStrongUp: TrendAnalysisResult = {
+  linearRegression: {
+    slope: 2.4,
+    intercept: 20,
+    rSquared: 0.86,
+    trendDirection: "strong_up",
+    predictedNext: 95,
+  },
+  exponentialSmoothing: {
+    smoothedValues: [32, 40, 51, 63, 74, 82],
+    lastSmoothed: 82,
+    trend: 5,
+  },
+  holtWinters: {
+    level: 80,
+    trend: 4.5,
+    seasonalFactors: Array(12).fill(1),
+    forecast: [90, 96, 101],
+    seasonalStrength: 0.2,
+  },
+  mannKendall: {
+    tau: 0.62,
+    pValue: 0.008,
+    significant: true,
+    trendDescription: "통계적으로 유의한 상승 트렌드",
+  },
+  volatility: {
+    standardDeviation: 9,
+    coefficientOfVariation: 0.18,
+    volatilityLevel: "medium",
+  },
+  overallScore: {
+    growthScore: 78,
+    stabilityScore: 72,
+    seasonalityScore: 20,
+    recommendation: "highly_recommended",
+  },
+};
+
+const demoTrendModerateUp: TrendAnalysisResult = {
+  linearRegression: {
+    slope: 1.1,
+    intercept: 25,
+    rSquared: 0.74,
+    trendDirection: "moderate_up",
+    predictedNext: 68,
+  },
+  exponentialSmoothing: {
+    smoothedValues: [30, 34, 39, 45, 52, 58],
+    lastSmoothed: 58,
+    trend: 3,
+  },
+  holtWinters: {
+    level: 56,
+    trend: 2.2,
+    seasonalFactors: Array(12).fill(1),
+    forecast: [60, 63, 66],
+    seasonalStrength: 0.18,
+  },
+  mannKendall: {
+    tau: 0.41,
+    pValue: 0.03,
+    significant: true,
+    trendDescription: "완만한 상승 트렌드",
+  },
+  volatility: {
+    standardDeviation: 7,
+    coefficientOfVariation: 0.16,
+    volatilityLevel: "low",
+  },
+  overallScore: {
+    growthScore: 68,
+    stabilityScore: 80,
+    seasonalityScore: 18,
+    recommendation: "recommended",
+  },
+};
+
+const demoMetrics: Record<
+  string,
+  {
+    keyword: string;
+    periods: number;
+    avgRatio: number;
+    recentAvgRatio: number;
+    prevAvgRatio: number | null;
+    growthRatio: number | null;
+    peakMonths: number[];
+    trendAnalysis?: TrendAnalysisResult;
+  }
+> = {
+  "충전식 손난로": {
+    keyword: "충전식 손난로",
+    periods: 6,
+    avgRatio: 52,
+    recentAvgRatio: 68,
+    prevAvgRatio: 38,
+    growthRatio: 68 / 38,
+    peakMonths: [11, 12, 1],
+    trendAnalysis: demoTrendStrongUp,
+  },
+  발난로: {
+    keyword: "발난로",
+    periods: 6,
+    avgRatio: 44,
+    recentAvgRatio: 57,
+    prevAvgRatio: 34,
+    growthRatio: 57 / 34,
+    peakMonths: [11, 12],
+    trendAnalysis: demoTrendModerateUp,
+  },
+};
+
+const demoSeries = [
+  { period: "2025-07-01", ratio: 32 },
+  { period: "2025-08-01", ratio: 38 },
+  { period: "2025-09-01", ratio: 49 },
+  { period: "2025-10-01", ratio: 63 },
+  { period: "2025-11-01", ratio: 78 },
+  { period: "2025-12-01", ratio: 85 },
+];
 
 export default function Home() {
   const [productName, setProductName] = useState("리유저블백");
@@ -118,10 +247,13 @@ export default function Home() {
                   을 한 번에 추천하는 소싱 전문가 챗봇입니다.
                 </span>
               </h1>
-              <p className="max-w-3xl text-lg leading-relaxed text-slate-700">
-                네이버 데이터랩과 마켓 데이터를 해석해 “다음 시즌에 뜰 키워드”와 “쿠팡에서
-                경쟁이 덜한 니치 제품명”을 제안합니다. 지금은 1인 셀러와 소규모 브랜드를 위한
-                베타 버전입니다.
+              <p className="max-w-1xl text-lg leading-relaxed text-slate-700">
+                네이버 데이터랩과 마켓 데이터를 해석해 “다음 시즌에 뜰 키워드”와“쿠팡에서
+                경쟁이 덜한 니치 제품명”을 제안합니다.
+                </p>
+              <p className="max-w-1xl text-lg leading-relaxed text-slate-700">
+
+                 지금은 1인 셀러와 소규모 브랜드를 위한 베타 버전입니다.
               </p>
               <div className="flex flex-wrap items-center gap-3">
                 <a
@@ -167,6 +299,61 @@ export default function Home() {
             </div>
           </div>
         </header>
+
+        {/* 데모 시각화 섹션 */}
+        <section className="mx-auto mt-12 max-w-5xl rounded-2xl border border-slate-100 bg-gradient-to-br from-white via-sky-50/40 to-amber-50/50 p-6 shadow-sm">
+          <div className="grid gap-6 md:grid-cols-[1.1fr,0.9fr] md:items-center">
+            <div className="space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+                데이터 기반 트렌드 예시
+              </p>
+              <h2 className="text-xl font-semibold text-slate-900">
+                키워드별 성장점수와
+                <br />
+                시계열 예측까지 한눈에.
+              </h2>
+              <p className="text-sm text-slate-700">
+                아래 그래프는 &quot;충전식 손난로&quot;, &quot;발난로&quot; 같은 겨울 시즌 키워드를
+                예시로 만든 목데이터입니다. 실제 Lab에서는 네이버 DataLab 시계열을 기반으로
+                성장점수·예측·계절성을 실시간으로 계산해 보여줍니다.
+              </p>
+              <div className="mt-2 rounded-xl border border-slate-200 bg-white/90 p-3 text-xs text-slate-700">
+                <p className="font-semibold text-slate-900">
+                  이런 질문을 던지면 어떤 그림이 그려질까요?
+                </p>
+                <p className="mt-1">
+                  &quot;충전식 손난로랑 발난로 중에서, 내년 시즌에 더 밀어야 할 키워드가 뭐야? 예측
+                  그래프랑 성장점수를 기준으로 설명해줘.&quot;
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4 rounded-xl border border-slate-200 bg-white/95 p-4 text-xs text-slate-800 shadow-sm">
+              <p className="text-[11px] font-semibold text-slate-900">
+                키워드별 성장점수 비교 (데모)
+              </p>
+              <GrowthScoreComparisonChart metrics={demoMetrics as any} />
+              <p className="mt-2 text-[11px] text-slate-500">
+                성장점수가 높고 안정성이 좋은 키워드를 우선 추천 후보로 사용합니다. 예시에서는
+                &quot;충전식 손난로&quot;가 가장 유망한 키워드로 보입니다.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-6 rounded-xl border border-slate-200 bg-white/95 p-4 text-xs text-slate-800 shadow-sm">
+            <p className="text-[11px] font-semibold text-slate-900">
+              &quot;충전식 손난로&quot; - 시계열 분석 &amp; 예측 (데모)
+            </p>
+            <div className="mt-3">
+              <TimeSeriesForecastChart
+                keyword="충전식 손난로"
+                series={demoSeries}
+                metrics={demoMetrics["충전식 손난로"] as any}
+                timeUnit="month"
+              />
+            </div>
+          </div>
+        </section>
 
         <section
           id="trial"
@@ -293,10 +480,158 @@ export default function Home() {
           ) : null}
 
           {trialResult ? (
-            <div className="mt-4 max-h-[320px] space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm leading-relaxed text-slate-800 whitespace-pre-line">
-              {trialResult}
+            <div className="mt-4 max-h-[320px] space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm leading-relaxed text-slate-800">
+              <ReactMarkdown
+                className="space-y-1.5 text-sm"
+                components={{
+                  h1: ({ children }) => (
+                    <h1 className="mb-1 text-base font-semibold text-slate-900">
+                      {children}
+                    </h1>
+                  ),
+                  h2: ({ children }) => (
+                    <h2 className="mb-1 text-sm font-semibold text-slate-900">
+                      {children}
+                    </h2>
+                  ),
+                  h3: ({ children }) => (
+                    <h3 className="mb-0.5 text-[13px] font-semibold text-slate-900">
+                      {children}
+                    </h3>
+                  ),
+                  strong: ({ children }) => (
+                    <span className="font-semibold text-slate-900">
+                      {children}
+                    </span>
+                  ),
+                  p: ({ children }) => (
+                    <p className="text-sm leading-relaxed text-slate-900">
+                      {children}
+                    </p>
+                  ),
+                  ul: ({ children }) => (
+                    <ul className="list-disc pl-4 text-sm text-slate-900">
+                      {children}
+                    </ul>
+                  ),
+                  ol: ({ children }) => (
+                    <ol className="list-decimal pl-4 text-sm text-slate-900">
+                      {children}
+                    </ol>
+                  ),
+                  li: ({ children }) => (
+                    <li className="my-0.5">{children}</li>
+                  ),
+                }}
+              >
+                {trialResult}
+              </ReactMarkdown>
             </div>
           ) : null}
+        </section>
+
+        {/* Lab 미리보기 섹션 */}
+        <section className="mx-auto mt-16 grid max-w-5xl gap-6 rounded-2xl border border-slate-100 bg-gradient-to-br from-white via-amber-50/40 to-sky-50/60 p-6 shadow-sm md:grid-cols-[1.1fr,0.9fr]">
+          <div className="space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+              워크플로우 미리보기
+            </p>
+            <h2 className="text-xl font-semibold text-slate-900">
+              Lab에서는 한 화면에서
+              <br />
+              트렌드 분석 · 니치 제품명 · 시각화를 함께 봅니다.
+            </h2>
+            <ul className="mt-2 space-y-2 text-sm text-slate-700">
+              <li>
+                1) 오른쪽 패널에서 기간·카테고리·분석 키워드를 고르고{" "}
+                <span className="font-semibold text-amber-700">
+                  &quot;조건을 대화에 추가&quot;
+                </span>{" "}
+                버튼으로 프롬프트에 붙입니다.
+              </li>
+              <li>
+                2) 챗봇이 네이버 DataLab과 ML 분석을 실행해,{" "}
+                <span className="font-semibold">데이터 요약 + 니치 제품명</span>을
+                한 번에 제안합니다.
+              </li>
+              <li>
+                3) 아래 카드와 그래프로{" "}
+                <span className="font-semibold">
+                  성장점수, 예측 시계열, 계절성
+                </span>{" "}
+                을 바로 확인하면서 다음 질문을 이어갈 수 있습니다.
+              </li>
+            </ul>
+            <a
+              href="/lab"
+              className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-md shadow-amber-200/70 transition hover:bg-slate-800"
+            >
+              Lab 화면에서 직접 살펴보기
+              <ArrowRight className="h-3 w-3" />
+            </a>
+          </div>
+
+          <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white/95 p-4 text-xs text-slate-800 shadow-sm">
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700">
+                <Sparkles className="h-3 w-3" />
+                키워드 소싱 레이더 · Lab
+              </span>
+              <span className="text-[11px] text-slate-400">미리보기</span>
+            </div>
+            <div className="mt-1 space-y-2 rounded-xl bg-slate-50/80 p-3">
+              <div className="flex gap-2">
+                <div className="mt-1 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 text-[10px] font-bold text-slate-900">
+                  K
+                </div>
+                <div className="flex-1 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-[11px] leading-relaxed">
+                  # 데이터 기반 키워드 분석 요약
+                  <br />
+                  - 기간: 2025-09-09 ~ 2025-12-09
+                  <br />
+                  - 카테고리: 생활/건강 · 분석 키워드: 핫팩
+                  <br />
+                  - 성장성: 강한 감소, 피크 시즌은 10~12월에 집중
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <div className="flex-1 rounded-2xl bg-amber-500 px-3 py-2 text-right text-[11px] font-medium text-slate-950">
+                  겨울 라이더 타깃으로 장시간 발열 핫팩
+                  <br />
+                  제품명을 5개만 더 추천해줘.
+                </div>
+              </div>
+            </div>
+            <div className="mt-1 grid gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-3">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-slate-900">
+                  이번 턴에서 사용된 네이버 DataLab 키워드
+                </span>
+                <span className="text-slate-400">성장점수 상위 3개</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-[10px]">
+                <div className="rounded-lg bg-white px-2 py-2">
+                  <p className="font-semibold text-slate-900">핫팩</p>
+                  <p className="text-slate-500">성장점수 28 · 계절성 강함</p>
+                </div>
+                <div className="rounded-lg bg-white px-2 py-2">
+                  <p className="font-semibold text-slate-900">발난로</p>
+                  <p className="text-slate-500">성장점수 62 · 추천</p>
+                </div>
+                <div className="rounded-lg bg-white px-2 py-2">
+                  <p className="font-semibold text-slate-900">충전식 손난로</p>
+                  <p className="text-slate-500">성장점수 74 · 적극 추천</p>
+                </div>
+              </div>
+              <div className="mt-1 flex items-center gap-2 rounded-lg bg-white px-2 py-2 text-[10px] text-slate-500">
+                <LineChart className="h-4 w-4 text-sky-500" />
+                <span>
+                  클릭하면 키워드별 시계열 분석 &amp; 예측 그래프를 Lab 화면에서 바로 확인할 수
+                  있습니다.
+                </span>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
     </div>
