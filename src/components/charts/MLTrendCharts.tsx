@@ -275,6 +275,12 @@ export function TimeSeriesForecastChart({
     forecast: null as number | null,
   }));
 
+  // 연속성을 위해 마지막 실제 데이터 포인트의 forecast 값을 설정
+  if (actualData.length > 0) {
+    const lastActual = actualData[actualData.length - 1];
+    lastActual.forecast = lastActual.actual;
+  }
+
   // 예측 데이터 추가
   const lastPeriod = series[series.length - 1]?.period ?? "";
   const forecastData = ta.holtWinters.forecast.map((f, idx) => {
@@ -650,13 +656,27 @@ export function OverallScoreRadarChart({
             </div>
             <div>
               <span className="text-slate-500">추천</span>
-              <p className="font-semibold" style={{ color: RECOMMENDATION_COLORS[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "neutral"] }}>
-                {RECOMMENDATION_KOR[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "neutral"]}
-              </p>
+              <span
+                className="px-1.5 py-0.5 rounded text-white"
+                style={{ backgroundColor: RECOMMENDATION_COLORS[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "hold"] }}
+              >
+                {RECOMMENDATION_KOR[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "hold"]}
+              </span>
             </div>
           </div>
-        </div>
-      )}
+          <div className="mt-2 pt-2 border-t border-slate-200 flex justify-end">
+            <a
+              href={`https://www.coupang.com/np/search?channel=user&q=${encodeURIComponent(activeKeyword || "")}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-2 py-1 text-[10px] font-semibold text-white hover:bg-slate-800"
+            >
+              쿠팡 검색 ↗
+            </a>
+          </div>
+        </div >
+      )
+      }
 
       <ResponsiveContainer width="100%" height={320}>
         <RadarChart data={radarData}>
@@ -691,7 +711,7 @@ export function OverallScoreRadarChart({
           <Tooltip />
         </RadarChart>
       </ResponsiveContainer>
-    </div>
+    </div >
   );
 }
 
