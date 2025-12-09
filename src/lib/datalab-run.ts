@@ -7,6 +7,11 @@ import {
   normalizeNaverKeyword,
 } from "@/lib/naver-top-keywords";
 import { getSupabaseClient } from "@/lib/supabase";
+import {
+  analyzeTrend,
+  type DataPoint,
+  type TrendAnalysisResult,
+} from "@/lib/timeseries-analysis";
 
 /**
  * Lab / 챗봇에서 공통으로 사용하는
@@ -40,6 +45,7 @@ export type KeywordStats = {
   prevAvgRatio: number | null;
   growthRatio: number | null;
   peakMonths: number[];
+  trendAnalysis?: TrendAnalysisResult;
 };
 
 export type KeywordAnalysisResult = {
@@ -291,6 +297,84 @@ export async function runKeywordAnalysisTransaction(
   }
 
   // 2) 카테고리/키워드 트렌드 API 호출로 시계열 + 통계 계산
+  const { metrics, series } = await runCategoryKeywordTrendAnalysis({
+    categoryId,
+    startDate,
+    endDate,
+    timeUnit,
+    deviceCode,
+    genderCode,
+    ageCodes,
+    keywords,
+  });
+
+  // 3) analysis_runs 테이블에 요약 파라미터 + Top 키워드 저장
+  let analysisRunId: number | null = null;
+  const supabase = getSupabaseClient();
+
+  if (supabase) {
+    const { data, error } = await supabase
+      .from("analysis_runs")
+      .insert({
+        status: "success",
+        date_from: startDate,
+        date_to: endDate,
+        period_type: "direct",
+        device_scope: devices,
+        gender_scope: [gender],
+        age_buckets: ageBuckets,
+        categories,
+        top_keywords: keywords,
+        started_at: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single();
+
+    if (!error && data?.id) {
+      analysisRunId = data.id as number;
+    }
+  }
+
+  return {
+    analysisRunId,
+    categoryId,
+    startDate,
+    endDate,
+    timeUnit,
+    keywords,
+    metrics,
+    series,
+  };
+}
+
+/**
+ * 지정된 키워드 배열을 사용해 카테고리/키워드 트렌드 API를 호출하고,
+ * 시계열 데이터와 요약 통계를 계산한다.
+ * - Top 키워드 및 사용자 지정 키워드 모두 공통으로 사용하는 내부 헬퍼.
+ */
+async function runCategoryKeywordTrendAnalysis({
+  categoryId,
+  startDate,
+  endDate,
+  timeUnit,
+  deviceCode,
+  genderCode,
+  ageCodes,
+  keywords,
+}: {
+  categoryId: string;
+  startDate: string;
+  endDate: string;
+  timeUnit: "month";
+  deviceCode: "" | "pc" | "mo";
+  genderCode: "" | "m" | "f";
+  ageCodes: string[];
+  keywords: string[];
+}): Promise<{
+  metrics: Record<string, KeywordStats>;
+  series: Record<string, KeywordPoint[]>;
+}> {
   const chunkSize = 5;
   const chunks: string[][] = [];
   for (let i = 0; i < keywords.length; i += chunkSize) {
@@ -333,7 +417,66 @@ export async function runKeywordAnalysisTransaction(
 
   const metrics = buildKeywordStats(series);
 
-  // 3) analysis_runs 테이블에 요약 파라미터 + Top 키워드 저장
+  // ML 시계열 분석(선형회귀, Holt-Winters, Mann-Kendall 등)을 각 키워드에 적용해
+  // trendAnalysis 필드에 저장한다. 키워드 툴과 Lab 챗봇 양쪽에서 동일한 구조를 사용한다.
+  for (const [kw, points] of Object.entries(series)) {
+    const dataPoints: DataPoint[] = points.map((p) => ({
+      period: p.period,
+      ratio: p.ratio,
+    }));
+    metrics[kw].trendAnalysis = analyzeTrend(dataPoints);
+  }
+
+  return {
+    metrics,
+    series,
+  };
+}
+
+/**
+ * 사용자가 지정한 키워드 배열을 기준으로 DataLab 분석 트랜잭션을 수행한다.
+ * - Top 키워드를 전혀 사용하지 않고, 전달된 키워드만 카테고리/키워드 API에 넣어 분석한다.
+ */
+export async function runKeywordAnalysisForExplicitKeywords(
+  params: DatalabParams,
+  explicitKeywords: string[],
+): Promise<KeywordAnalysisResult> {
+  const { dateFrom, dateTo, devices, gender, ageBuckets, categories } = params;
+
+  const startDate = dateFrom;
+  const endDate = dateTo;
+  const timeUnit = "month" as const;
+
+  const firstCategory = categories[0] ?? "생활잡화";
+  const categoryId = CATEGORY_TO_CID[firstCategory] ?? "50000007";
+
+  const deviceCode = mapDeviceToApi(devices);
+  const genderCode = mapGenderToApi(gender);
+  const ageCodes = mapAgesToApi(ageBuckets);
+
+  let keywords = explicitKeywords
+    .map((k) => k.trim())
+    .filter((k, idx, arr) => k.length > 0 && arr.indexOf(k) === idx);
+
+  // DataLab 카테고리/키워드 API 특성상 한 번에 너무 많은 키워드를 넣으면 응답이 불안정할 수 있어,
+  // 최대 10개까지만 사용한다.
+  keywords = keywords.slice(0, 10);
+
+  if (!keywords.length) {
+    throw new Error("분석할 키워드를 찾지 못했습니다. 최소 1개 이상의 키워드를 선택해주세요.");
+  }
+
+  const { metrics, series } = await runCategoryKeywordTrendAnalysis({
+    categoryId,
+    startDate,
+    endDate,
+    timeUnit,
+    deviceCode,
+    genderCode,
+    ageCodes,
+    keywords,
+  });
+
   let analysisRunId: number | null = null;
   const supabase = getSupabaseClient();
 

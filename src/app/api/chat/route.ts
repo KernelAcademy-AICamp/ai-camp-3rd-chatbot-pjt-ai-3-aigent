@@ -3,6 +3,7 @@ import { groqClient, getGroqContent } from "@/lib/groq";
 import {
   DatalabParams,
   runKeywordAnalysisTransaction,
+  runKeywordAnalysisForExplicitKeywords,
   KeywordStats,
 } from "@/lib/datalab-run";
 
@@ -274,12 +275,20 @@ import { getSupabaseClient } from "@/lib/supabase";
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { productName, target, focus, messages, datalabParams } = body as {
+  const {
+    productName,
+    target,
+    focus,
+    messages,
+    datalabParams,
+    analysisMode,
+  } = body as {
     productName?: string;
     target?: string;
     focus?: string[];
     messages?: { role: "user" | "assistant"; content: string }[];
     datalabParams?: DatalabParams;
+    analysisMode?: "datalab" | "generic";
   };
 
   if (!groqClient) {
@@ -289,7 +298,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const focusText = Array.isArray(focus) && focus.length > 0 ? focus.join(", ") : "일반";
+  const focusArray = Array.isArray(focus)
+    ? focus.filter((f) => typeof f === "string" && f.trim().length > 0)
+    : [];
+  const focusText =
+    focusArray.length > 0 ? focusArray.join(", ") : "일반";
   const basePrompt = [
     "당신은 쇼핑 마켓 검색 패턴과 트렌드를 이해하는 한국어 소싱 전문가 챗봇입니다.",
     "",
@@ -300,14 +313,44 @@ export async function POST(request: Request) {
     "4) 정보가 부족하면 기본 상품명, 타깃, 강조 포인트를 추가로 물어본 뒤에 추천을 진행합니다.",
     "5) 이전 대화 맥락을 기억하고, '3번만 더 짧게', '방수 포인트를 더 강조해줘'와 같은 후속 요청에는 직전 추천 결과를 기준으로 수정합니다.",
     "",
+    "데이터 활용 원칙:",
+    "- 시스템 메시지로 제공되는 '[데이터 기반 키워드 분석 요약]' 텍스트는 네이버 데이터랩에서 실제로 계산된 결과입니다.",
+    "- 이 텍스트에 적힌 분석 기간, 카테고리 이름/ID, 키워드 리스트를 사실로 가정하고, 임의로 다른 카테고리 이름으로 바꾸어 말하지 마세요.",
+    "- 카테고리 이름은 요약에 그대로 적힌 라벨(예: '생활/건강')을 사용합니다.",
+    "",
+    "응답 구조:",
+    "1. 데이터 기반 키워드 분석 요약",
+    "   - 네이버 데이터랩 요약을 3~6줄로 다시 정리합니다.",
+    "   - 어떤 카테고리/기간 기준인지, 어떤 유형의 키워드가 상승/보합/감소인지 명확히 설명합니다.",
+    "",
+    "2. 니치 키워드 및 제품명 제안",
+    "   - 데이터 상 유망해 보이는 키워드를 중심으로 니치 키워드 3~6개를 먼저 제안합니다.",
+    "   - 이어서 제품명 5~8개를 추천하고, 각 제품명마다 포함 키워드·트렌드/경쟁도 요약·추천 이유를 한 줄씩 적습니다.",
+    "",
+    "3. 추가 질문/다음 액션",
+    "   - 필요하다면 타깃/가격대/채널 등을 1~2문장 내에서 짧게 되물어보거나, 다음에 할 수 있는 분석 방향을 제안합니다.",
+    "",
     "스타일:",
     "- 실제 검색에 쓰일 수 있는 자연스러운 단어 위주로 제안합니다.",
     "- 과도한 감탄사나 이모지는 사용하지 않습니다.",
+    "- 마크다운 표, 파이프(|), HTML 태그(<br> 등)는 사용하지 않습니다.",
+    "- 대신, 섹션 제목에는 `#`, `##`, `###` 와 같은 마크다운 헤딩과 굵게(`**텍스트**`), 리스트(`- 항목`, `1. 항목`)만 사용해 가독성을 높입니다.",
+    "",
+    "니치 키워드/제품명 설계 원칙:",
+    "- 항상 '이 이름으로 실제 스마트스토어/쿠팡 상품명을 올릴 수 있는지'를 기준으로, 구체적이고 현실적인 조합만 사용합니다.",
+    "- 니치 포인트는 다음 축을 중심으로 만듭니다:",
+    "  · 타깃: 연령, 성별, 직업, 라이프스타일(예: 라이더, 야외근무자, 학생, 시니어 등)",
+    "  · 사용 상황/장소: 출퇴근, 등산·낚시·골프, 사무실, 교실, 차량 내부 등",
+    "  · 형태/부위/사이즈: 붙이는 타입, 깔창형, 손가락/손목용, 허리·복부용, 미니/대용량 등",
+    "  · 가치 요소: 장시간 지속, 저온화상 방지, 친환경(재사용·충전식), 프리미엄 소재, 선물용 패키지 등",
+    "- 서로 다른 카테고리를 억지로 섞은 조합(예: '핫팩 무선 전자기기', '핫팩 알러지용 스티커'처럼 구체적인 제품 이미지가 떠오르지 않는 이름)은 피합니다.",
+    "- 기존 키워드에 전혀 관계없는 트렌드 단어(스마트홈, 메타버스, 앱 등)를 단순히 붙이는 방식이 아니라, 해당 상품군의 실제 사용 맥락 안에서 자연스럽게 파생될 수 있는 니치를 만듭니다.",
+    "- 제품명은 가능한 한 '카테고리 + 타깃/용도 + 핵심 장점'이 한 번에 드러나도록 작성합니다. (예: '라이더 12시간 발열 핫팩 프로', '골프라운드 깔창형 발난로' 등)",
     "",
     "질문 유형에 따른 응답 가이드:",
-    "- 질문 유형이 'trend'이면: 시장/검색 트렌드와 계절성을 중심으로 설명하고, 필요 시 유망 키워드를 3~5개 정도 제안합니다. 바로 제품명 리스트만 길게 나열하지 마세요.",
+    "- 질문 유형이 'trend'이면: 위 1번 섹션(데이터 요약)에 비중을 두고, 유망 키워드/상품 방향을 중심으로 설명합니다. 제품명 예시는 2~4개 정도만 간단히.",
     "- 질문 유형이 'strategy'이면: 어느 포지션/타깃/가격대가 유리한지, 어떤 키워드를 잡고 소싱해야 할지 전략적 관점에서 정리합니다. 제품명 예시는 2~3개 정도만 간단히.",
-    "- 질문 유형이 'naming'이면: 제품명·카피 작성에 집중하고, 트렌드 설명은 짧게만 언급합니다.",
+    "- 질문 유형이 'naming'이면: 제품명·카피 작성에 집중하되, 1번 섹션에서 핵심 트렌드만 2~3줄로 짧게 언급합니다.",
     "- 질문 유형이 'other'이면: 사용자의 의도를 파악한 뒤, 필요한 경우 위 세 유형 중 하나로 자연스럽게 방향을 제안합니다.",
   ].join("\n");
 
@@ -330,6 +373,24 @@ export async function POST(request: Request) {
         analysisRunId: number | null;
       }
     | null = null;
+  let keywordInsights:
+    | {
+        startDate: string;
+        endDate: string;
+        timeUnit: string;
+        items: {
+          keyword: string;
+          periods: number;
+          avgRatio: number;
+          recentAvgRatio: number;
+          growthRatio: number | null;
+          peakMonths: number[];
+          series: { period: string; ratio: number }[];
+        }[];
+      }
+    | null = null;
+  let datalabExecuted = false;
+  let datalabKeywordSource: "top10" | "focus" | "unknown" = "unknown";
 
   const lastUserMessage =
     history
@@ -337,10 +398,24 @@ export async function POST(request: Request) {
       .slice(-1)
       .map((m) => m.content)[0] ?? "";
 
-  const effectiveDatalabParams = inferDatalabParams(
-    datalabParams,
-    lastUserMessage,
-  );
+  // 프론트에서 전달한 분석 모드 + 메시지 내 스니펫을 함께 고려해
+  // 실제 DataLab 실행 모드를 결정한다.
+  //
+  // - 기본값은 프론트에서 넘긴 analysisMode 값을 따르되,
+  // - 마지막 사용자 메시지에 "키워드 분석 조건:" 스니펫이 명시적으로 포함되어 있으면
+  //   안전하게 DataLab 분석 모드로 강제 전환한다.
+  //
+  // 이렇게 하면 프론트 쪽 상태 버그가 있더라도, 사용자가 스니펫을 넣은 턴에서는
+  // 항상 DataLab 파이프라인을 타도록 보장할 수 있다.
+  const hasSnippetInMessage = lastUserMessage.includes("키워드 분석 조건:");
+
+  const resolvedAnalysisMode: "datalab" | "generic" =
+    analysisMode === "datalab" || hasSnippetInMessage ? "datalab" : "generic";
+
+  const effectiveDatalabParams =
+    resolvedAnalysisMode === "datalab"
+      ? inferDatalabParams(datalabParams, lastUserMessage)
+      : null;
 
   const questionType = await classifyQuestionType(lastUserMessage);
 
@@ -348,6 +423,7 @@ export async function POST(request: Request) {
     console.log("[Datalab][routing] questionType:", questionType, {
       hasBaseParams: Boolean(datalabParams),
       hasEffectiveParams: Boolean(effectiveDatalabParams),
+      hasSnippetInMessage,
       lastUserSnippet: lastUserMessage.slice(0, 80),
     });
   }
@@ -384,12 +460,19 @@ export async function POST(request: Request) {
         datalabSummary = null;
       } else {
         // 1) 네이버 DataLab 분석 트랜잭션 실행
-        //    - Top 키워드 크롤링
-        //    - 시계열 + 성장성/계절성 지표 계산
-        //    - analysis_runs 로그 저장
-        const result = await runKeywordAnalysisTransaction(
-          effectiveDatalabParams,
-        );
+        //    - focusArray(분석 키워드)가 있으면 이를 기준으로 분석
+        //    - 없으면 기존처럼 카테고리 Top 10 키워드를 사용
+        const hasFocusKeywords = focusArray.length > 0;
+
+        const result = hasFocusKeywords
+          ? await runKeywordAnalysisForExplicitKeywords(
+              effectiveDatalabParams,
+              focusArray,
+            )
+          : await runKeywordAnalysisTransaction(effectiveDatalabParams);
+
+        datalabExecuted = true;
+        datalabKeywordSource = hasFocusKeywords ? "focus" : "top10";
 
         if (process.env.NODE_ENV !== "production") {
           console.log("[Datalab][analysis] success", {
@@ -478,11 +561,36 @@ export async function POST(request: Request) {
           })
           .join("\n");
 
+        keywordInsights = {
+          startDate: result.startDate,
+          endDate: result.endDate,
+          timeUnit: result.timeUnit,
+          items: metricsArray.map((m) => ({
+            keyword: m.keyword,
+            periods: m.periods,
+            avgRatio: m.avgRatio,
+            recentAvgRatio: m.recentAvgRatio,
+            prevAvgRatio: m.prevAvgRatio,
+            growthRatio: m.growthRatio,
+            peakMonths: m.peakMonths,
+            trendAnalysis: m.trendAnalysis,
+            series: result.series[m.keyword] ?? [],
+          })),
+        };
+
+        const categoryLabel =
+          effectiveDatalabParams.categories &&
+          effectiveDatalabParams.categories.length > 0
+            ? effectiveDatalabParams.categories.join(", ")
+            : "패널에서 지정한 카테고리";
+
         datalabSummary = [
           "[데이터 기반 키워드 분석 요약]",
           `- 분석 기간: ${result.startDate} ~ ${result.endDate} (timeUnit=${result.timeUnit})`,
-          `- 분석 카테고리 ID: ${result.categoryId}`,
-          `- Top 키워드: ${result.keywords.join(", ")}`,
+          `- 분석 카테고리: ${categoryLabel} (ID: ${result.categoryId})`,
+          hasFocusKeywords
+            ? `- 분석 키워드: ${result.keywords.join(", ")}`
+            : `- Top 키워드: ${result.keywords.join(", ")}`,
           ...(candidateLines.length
             ? ["- 성장성 기준 요약:", ...candidateLines]
             : []),
@@ -533,9 +641,16 @@ export async function POST(request: Request) {
             `- 타깃/상황: ${target || "사용자가 대화에서 지정"}`,
             `- 강조 포인트: ${focusText}`,
             `- 질문 유형: ${questionType}`,
+            `- 분석 모드: ${
+              resolvedAnalysisMode === "datalab"
+                ? "네이버 데이터랩 분석 모드"
+                : "일반 대화 모드"
+            }`,
             datalabSummary
               ? [
-                  "\n[추가 데이터] 네이버 데이터랩 기반 키워드 분석 요약이 포함되어 있습니다. 아래 내용을 참고해 추천의 근거로 활용하세요.",
+                  "",
+                  "[추가 데이터] 네이버 데이터랩 기반 키워드 분석 요약이 포함되어 있습니다.",
+                  "아래 텍스트는 실제 API 응답을 바탕으로 생성된 것이므로, 기간/카테고리/키워드 정보를 사실로 가정하고 활용하세요.",
                   datalabSummary,
                   "",
                   "[응답 시 데이터 활용 원칙]",
@@ -544,9 +659,25 @@ export async function POST(request: Request) {
                   "- 숫자(성장률, 퍼센트)를 그대로 반복해서 나열하기보다는, 상승/보합/감소 방향과 계절성, 니치 여부를 중심으로 정리하세요.",
                 ].join("\n")
               : "",
+            ...(focusArray.length
+              ? [
+                  "",
+                  "[분석 키워드(패널 선택 항목) 활용 규칙]",
+                  `- 사용자가 패널에서 분석 키워드로 선택한 항목: ${focusArray.join(", ")}`,
+                  "- 제품명·니치 키워드 제안 시 이 선택된 분석 키워드를 우선 반영하세요.",
+                  "- 가능하다면 각 제품명에는 최소 1개 이상의 분석 키워드를 포함시키고, 포함되지 않는 경우에도 해당 키워드와 직접적인 연관성이 드러나도록 작성합니다.",
+                  "- DataLab Top 키워드는 전체 시장 맥락(상승/감소, 계절성)을 설명하는 용도로 사용하고, 실제 추천의 중심축은 사용자가 선택한 분석 키워드입니다.",
+                ]
+              : []),
             "",
-            "대화 기록을 참고해, 사용자의 최신 메시지에 맞는 추천 제품명을 작성하세요.",
-            "응답 형식 (각 제품명 사이에는 빈 줄 하나를 넣어주세요):",
+            "대화 기록과 위의 데이터 요약을 모두 참고해, 사용자의 최신 메시지에 맞는 응답을 작성하세요.",
+            "",
+            "응답 형식(섹션 제목 그대로 사용하지 않아도 되지만, 아래 3가지 내용이 순서대로 포함되도록 작성하세요):",
+            "1. 데이터 기반 키워드 분석 요약",
+            "2. 니치 키워드 및 제품명 제안",
+            "3. 추가 질문/다음 액션 제안 (필요한 경우)",
+            "",
+            "제품명을 제안할 때는 각 제품명 사이에 빈 줄 하나를 넣고, 다음 형식을 사용합니다:",
             "1) 제품명",
             "   - 포함 키워드: ...",
             "   - 트렌드/경쟁도: ...",
@@ -608,7 +739,24 @@ export async function POST(request: Request) {
       }
     }
 
-    return NextResponse.json({ reply, datalabDebug });
+    const routingDebug =
+      process.env.NODE_ENV !== "production"
+        ? {
+            mode: resolvedAnalysisMode,
+            hasEffectiveParams: Boolean(effectiveDatalabParams),
+            datalabExecuted,
+            questionType,
+            hasSnippetInMessage,
+            datalabKeywordSource,
+          }
+        : undefined;
+
+    return NextResponse.json({
+      reply,
+      datalabDebug,
+      keywordInsights,
+      routingDebug,
+    });
   } catch (error) {
     console.error("Groq chat error", error);
 
