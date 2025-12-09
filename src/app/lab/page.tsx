@@ -135,6 +135,7 @@ export default function LabPage() {
   const [insightSeriesKeyword, setInsightSeriesKeyword] = useState<
     string | null
   >(null);
+  const [showKeywordInsights, setShowKeywordInsights] = useState(true);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // 네이버 데이터랩/마켓 분석용 파라미터
@@ -509,6 +510,9 @@ export default function LabPage() {
       setMessages(next);
       setKeywordInsights(data.keywordInsights ?? null);
       setInsightSeriesKeyword(null);
+      if (data.keywordInsights && data.keywordInsights.items.length > 0) {
+        setShowKeywordInsights(true);
+      }
       // 새 입력창은 비워지므로 조건 스니펫 상태도 초기화한다.
       setHasConditionsSnippet(false);
     } catch (err) {
@@ -702,7 +706,9 @@ export default function LabPage() {
                   모델이 추천을 계산하고 있어요...
                 </div>
               ) : null}
-              {keywordInsights && keywordInsights.items.length > 0 && (
+              {keywordInsights &&
+                keywordInsights.items.length > 0 &&
+                showKeywordInsights && (
                 <div className="mt-6 space-y-3 rounded-2xl border border-amber-100 bg-amber-50/80 p-4 text-xs text-slate-800">
                   {/* 1) 키워드 카드 리스트 */}
                   <div className="flex items-center justify-between gap-2">
@@ -718,7 +724,7 @@ export default function LabPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        setKeywordInsights(null);
+                        setShowKeywordInsights(false);
                         setInsightSeriesKeyword(null);
                       }}
                       className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-white"
@@ -951,6 +957,20 @@ export default function LabPage() {
                   })()}
                 </div>
               )}
+              {keywordInsights &&
+                keywordInsights.items.length > 0 &&
+                !showKeywordInsights && (
+                  <div className="mt-4 flex items-center justify-between rounded-full border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                    <span>이번 턴의 데이터랩 분석 결과 패널이 숨겨져 있습니다.</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowKeywordInsights(true)}
+                      className="rounded-full border border-amber-200 bg-white px-2 py-1 font-semibold hover:border-amber-300 hover:text-amber-900"
+                    >
+                      다시 보기
+                    </button>
+                  </div>
+                )}
             </div>
           </div>
 
