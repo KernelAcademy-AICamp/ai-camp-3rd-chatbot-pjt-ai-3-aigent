@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import {
   LineChart,
   Line,
@@ -20,6 +21,8 @@ import {
   ComposedChart,
   Area,
   ReferenceLine,
+  Brush,
+  ReferenceArea,
 } from "recharts";
 
 type TrendAnalysisResult = {
@@ -107,12 +110,15 @@ const RECOMMENDATION_KOR: Record<string, string> = {
 
 /**
  * 1. 키워드별 성장점수 비교 차트
+ * Brush 슬라이더로 키워드 범위 선택 가능
  */
 export function GrowthScoreComparisonChart({
   metrics,
 }: {
   metrics: Record<string, KeywordMetrics>;
 }) {
+  const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
+
   const data = Object.values(metrics)
     .filter((m) => m.trendAnalysis)
     .map((m) => ({
@@ -126,13 +132,38 @@ export function GrowthScoreComparisonChart({
 
   if (data.length === 0) return null;
 
+  const handleBarClick = (data: any) => {
+    if (data?.activePayload?.[0]?.payload) {
+      setSelectedKeyword(data.activePayload[0].payload.fullKeyword);
+    }
+  };
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <h3 className="text-sm font-semibold text-slate-900 mb-3">
+      <h3 className="text-sm font-semibold text-slate-900 mb-2">
         키워드별 성장점수 비교
       </h3>
-      <ResponsiveContainer width="100%" height={300}>
-        <BarChart data={data} layout="vertical" margin={{ left: 20, right: 20 }}>
+      <p className="text-[10px] text-slate-400 mb-2">
+        💡 막대를 클릭하여 선택 | 하단 슬라이더로 범위 조절
+      </p>
+      {selectedKeyword && (
+        <p className="text-[11px] text-orange-600 mb-2">
+          선택된 키워드: <strong>{selectedKeyword}</strong>
+          <button
+            onClick={() => setSelectedKeyword(null)}
+            className="ml-2 text-slate-400 hover:text-slate-600"
+          >
+            ✕
+          </button>
+        </p>
+      )}
+      <ResponsiveContainer width="100%" height={Math.max(300, data.length * 35 + 50)}>
+        <BarChart
+          data={data}
+          layout="vertical"
+          margin={{ left: 20, right: 20, bottom: 30 }}
+          onClick={handleBarClick}
+        >
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
           <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} />
           <YAxis
@@ -162,14 +193,29 @@ export function GrowthScoreComparisonChart({
               );
             }}
           />
-          <Bar dataKey="growthScore" name="성장점수">
+          <Bar dataKey="growthScore" name="성장점수" animationDuration={500}>
             {data.map((entry, index) => (
               <Cell
                 key={`cell-${index}`}
                 fill={RECOMMENDATION_COLORS[entry.recommendation]}
+                opacity={selectedKeyword && selectedKeyword !== entry.fullKeyword ? 0.3 : 1}
+                stroke={selectedKeyword === entry.fullKeyword ? "#000" : "none"}
+                strokeWidth={selectedKeyword === entry.fullKeyword ? 2 : 0}
+                style={{ cursor: "pointer" }}
               />
             ))}
           </Bar>
+          {/* Brush 슬라이더 (키워드가 5개 이상일 때만 표시) */}
+          {data.length > 5 && (
+            <Brush
+              dataKey="keyword"
+              height={20}
+              stroke={COLORS.primary}
+              fill="#f8fafc"
+              startIndex={0}
+              endIndex={Math.min(9, data.length - 1)}
+            />
+          )}
         </BarChart>
       </ResponsiveContainer>
       <p className="mt-2 text-[11px] text-slate-500">
@@ -181,6 +227,7 @@ export function GrowthScoreComparisonChart({
 
 /**
  * 2. 시계열 + 예측 그래프 (실제 데이터 + Holt-Winters 예측)
+ * 줌 기능: 드래그로 영역 선택, Brush 슬라이더, 더블클릭으로 리셋
  */
 export function TimeSeriesForecastChart({
   keyword,
@@ -194,6 +241,24 @@ export function TimeSeriesForecastChart({
   timeUnit: string;
 }) {
   const ta = metrics.trendAnalysis;
+
+  // 줌 상태 관리
+  const [zoomState, setZoomState] = useState<{
+    refAreaLeft: string | null;
+    refAreaRight: string | null;
+    left: string | number;
+    right: string | number;
+    top: string | number;
+    bottom: string | number;
+  }>({
+    refAreaLeft: null,
+    refAreaRight: null,
+    left: "dataMin",
+    right: "dataMax",
+    top: "dataMax+10",
+    bottom: "dataMin-10",
+  });
+
   if (!ta || !series || series.length === 0) return null;
 
   const formatDate = (period: string) => {
@@ -206,8 +271,8 @@ export function TimeSeriesForecastChart({
     period: formatDate(p.period),
     actual: p.ratio,
     smoothed: ta.exponentialSmoothing.smoothedValues[idx] ?? null,
-    // 선형회귀 추세선
     trend: ta.linearRegression.slope * idx + ta.linearRegression.intercept,
+    forecast: null as number | null,
   }));
 
   // 예측 데이터 추가
@@ -224,6 +289,66 @@ export function TimeSeriesForecastChart({
   });
 
   const chartData = [...actualData, ...forecastData];
+
+  // 드래그 줌 핸들러
+  const handleMouseDown = (e: any) => {
+    if (e?.activeLabel) {
+      setZoomState((prev) => ({ ...prev, refAreaLeft: e.activeLabel }));
+    }
+  };
+
+  const handleMouseMove = (e: any) => {
+    if (zoomState.refAreaLeft && e?.activeLabel) {
+      setZoomState((prev) => ({ ...prev, refAreaRight: e.activeLabel }));
+    }
+  };
+
+  const handleMouseUp = () => {
+    if (zoomState.refAreaLeft && zoomState.refAreaRight) {
+      const leftIndex = chartData.findIndex((d) => d.period === zoomState.refAreaLeft);
+      const rightIndex = chartData.findIndex((d) => d.period === zoomState.refAreaRight);
+
+      if (leftIndex !== -1 && rightIndex !== -1) {
+        const [left, right] = leftIndex <= rightIndex
+          ? [zoomState.refAreaLeft, zoomState.refAreaRight]
+          : [zoomState.refAreaRight, zoomState.refAreaLeft];
+
+        // 줌인된 데이터 범위에서 Y축 범위 계산
+        const startIdx = Math.min(leftIndex, rightIndex);
+        const endIdx = Math.max(leftIndex, rightIndex);
+        const zoomedData = chartData.slice(startIdx, endIdx + 1);
+        const values = zoomedData.flatMap(d => [d.actual, d.smoothed, d.trend, d.forecast].filter(v => v !== null) as number[]);
+
+        if (values.length > 0) {
+          const dataMax = Math.max(...values);
+          const dataMin = Math.min(...values);
+          const padding = (dataMax - dataMin) * 0.1;
+
+          setZoomState({
+            refAreaLeft: null,
+            refAreaRight: null,
+            left,
+            right,
+            top: dataMax + padding,
+            bottom: Math.max(0, dataMin - padding),
+          });
+        }
+      }
+    }
+    setZoomState((prev) => ({ ...prev, refAreaLeft: null, refAreaRight: null }));
+  };
+
+  // 줌 리셋 (더블클릭)
+  const handleDoubleClick = () => {
+    setZoomState({
+      refAreaLeft: null,
+      refAreaRight: null,
+      left: "dataMin",
+      right: "dataMax",
+      top: "dataMax+10",
+      bottom: "dataMin-10",
+    });
+  };
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -247,15 +372,33 @@ export function TimeSeriesForecastChart({
         </div>
       </div>
 
-      <ResponsiveContainer width="100%" height={280}>
-        <ComposedChart data={chartData} margin={{ left: 0, right: 20 }}>
+      {/* 줌 안내 */}
+      <p className="text-[10px] text-slate-400 mb-2">
+        💡 드래그로 영역 선택하여 줌인 | 더블클릭으로 리셋 | 하단 슬라이더로 범위 조절
+      </p>
+
+      <ResponsiveContainer width="100%" height={320}>
+        <ComposedChart
+          data={chartData}
+          margin={{ left: 0, right: 20, bottom: 30 }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onDoubleClick={handleDoubleClick}
+        >
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
           <XAxis
             dataKey="period"
             tick={{ fontSize: 10 }}
             interval="preserveStartEnd"
+            domain={[zoomState.left, zoomState.right]}
+            allowDataOverflow
           />
-          <YAxis tick={{ fontSize: 10 }} />
+          <YAxis
+            tick={{ fontSize: 10 }}
+            domain={[zoomState.bottom, zoomState.top]}
+            allowDataOverflow
+          />
           <Tooltip
             content={({ active, payload, label }) => {
               if (!active || !payload?.length) return null;
@@ -334,6 +477,26 @@ export function TimeSeriesForecastChart({
               fill: COLORS.purple,
             }}
           />
+
+          {/* 드래그 줌 영역 표시 */}
+          {zoomState.refAreaLeft && zoomState.refAreaRight && (
+            <ReferenceArea
+              x1={zoomState.refAreaLeft}
+              x2={zoomState.refAreaRight}
+              strokeOpacity={0.3}
+              fill={COLORS.secondary}
+              fillOpacity={0.3}
+            />
+          )}
+
+          {/* Brush 슬라이더 */}
+          <Brush
+            dataKey="period"
+            height={25}
+            stroke={COLORS.primary}
+            fill="#f8fafc"
+            tickFormatter={(value) => value}
+          />
         </ComposedChart>
       </ResponsiveContainer>
 
@@ -374,12 +537,15 @@ export function TimeSeriesForecastChart({
 
 /**
  * 3. 종합 점수 레이더 차트
+ * 클릭하면 해당 키워드 하이라이트 + 상세 정보 표시
  */
 export function OverallScoreRadarChart({
   metrics,
 }: {
   metrics: Record<string, KeywordMetrics>;
 }) {
+  const [activeKeyword, setActiveKeyword] = useState<string | null>(null);
+
   const keywords = Object.values(metrics).filter((m) => m.trendAnalysis);
   if (keywords.length === 0) return null;
 
@@ -448,11 +614,50 @@ export function OverallScoreRadarChart({
     COLORS.pink,
   ];
 
+  const activeKeywordData = activeKeyword
+    ? topKeywords.find(k => k.keyword === activeKeyword)
+    : null;
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <h3 className="text-sm font-semibold text-slate-900 mb-3">
+      <h3 className="text-sm font-semibold text-slate-900 mb-2">
         상위 키워드 종합 비교 (레이더)
       </h3>
+      <p className="text-[10px] text-slate-400 mb-2">
+        💡 범례를 클릭하여 키워드 하이라이트
+      </p>
+
+      {/* 선택된 키워드 상세 정보 */}
+      {activeKeywordData && (
+        <div className="mb-3 p-2 rounded-lg bg-slate-50 border border-slate-100">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm font-semibold text-slate-900">{activeKeyword}</span>
+            <button
+              onClick={() => setActiveKeyword(null)}
+              className="text-slate-400 hover:text-slate-600 text-xs"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-[10px]">
+            <div>
+              <span className="text-slate-500">성장점수</span>
+              <p className="font-semibold">{activeKeywordData.trendAnalysis?.overallScore.growthScore.toFixed(0)}/100</p>
+            </div>
+            <div>
+              <span className="text-slate-500">안정성</span>
+              <p className="font-semibold">{activeKeywordData.trendAnalysis?.overallScore.stabilityScore.toFixed(0)}/100</p>
+            </div>
+            <div>
+              <span className="text-slate-500">추천</span>
+              <p className="font-semibold" style={{ color: RECOMMENDATION_COLORS[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "neutral"] }}>
+                {RECOMMENDATION_KOR[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "neutral"]}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <ResponsiveContainer width="100%" height={320}>
         <RadarChart data={radarData}>
           <PolarGrid stroke="#e2e8f0" />
@@ -469,11 +674,20 @@ export function OverallScoreRadarChart({
               dataKey={k.keyword}
               stroke={radarColors[idx]}
               fill={radarColors[idx]}
-              fillOpacity={0.15}
-              strokeWidth={2}
+              fillOpacity={activeKeyword === null || activeKeyword === k.keyword ? 0.15 : 0.03}
+              strokeWidth={activeKeyword === k.keyword ? 3 : activeKeyword === null ? 2 : 1}
+              strokeOpacity={activeKeyword === null || activeKeyword === k.keyword ? 1 : 0.3}
             />
           ))}
-          <Legend wrapperStyle={{ fontSize: 11 }} />
+          <Legend
+            wrapperStyle={{ fontSize: 11, cursor: "pointer" }}
+            onClick={(e) => {
+              const kw = e.value as string | undefined;
+              if (kw) {
+                setActiveKeyword(prev => prev === kw ? null : kw);
+              }
+            }}
+          />
           <Tooltip />
         </RadarChart>
       </ResponsiveContainer>
@@ -577,6 +791,7 @@ export function RisingKeywordsSummary({
 
 /**
  * 5. 계절성 분석 차트
+ * Brush 슬라이더로 월별 범위 선택 가능
  */
 export function SeasonalityChart({
   metrics,
@@ -627,8 +842,11 @@ export function SeasonalityChart({
       <h3 className="text-sm font-semibold text-slate-900 mb-3">
         월별 계절성 패턴 (계절 지수 편차 %)
       </h3>
-      <ResponsiveContainer width="100%" height={280}>
-        <LineChart data={seasonalData} margin={{ left: 0, right: 20 }}>
+      <p className="text-[10px] text-slate-400 mb-2">
+        💡 하단 슬라이더로 월별 범위를 조절하세요
+      </p>
+      <ResponsiveContainer width="100%" height={320}>
+        <LineChart data={seasonalData} margin={{ left: 0, right: 20, bottom: 30 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
           <XAxis dataKey="month" tick={{ fontSize: 10 }} />
           <YAxis
@@ -652,6 +870,13 @@ export function SeasonalityChart({
               dot={{ r: 3 }}
             />
           ))}
+          {/* Brush 슬라이더 */}
+          <Brush
+            dataKey="month"
+            height={25}
+            stroke={COLORS.primary}
+            fill="#f8fafc"
+          />
         </LineChart>
       </ResponsiveContainer>
       <p className="mt-2 text-[11px] text-slate-500">
