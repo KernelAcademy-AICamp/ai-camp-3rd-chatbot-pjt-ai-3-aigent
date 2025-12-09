@@ -45,6 +45,26 @@ export async function GET(request: Request) {
       linkId: r.linkId,
     }));
 
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[Datalab][top-keywords][api]", {
+        cid,
+        startDate,
+        endDate,
+        timeUnit,
+        device,
+        gender,
+        age,
+        limit,
+        meta: {
+          statusCode: meta.statusCode,
+          returnCode: meta.returnCode,
+          range: (meta as any).range,
+        },
+        rawSample: ranks.slice(0, 10).map((r) => r.keyword),
+        topKeywords: top.map((t) => t.keyword),
+      });
+    }
+
     return NextResponse.json({
       cid,
       timeUnit,

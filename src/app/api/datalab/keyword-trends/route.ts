@@ -212,7 +212,23 @@ export async function POST(request: Request) {
         "입력으로 카테고리 내 여러 키워드의 검색 지표(평균, 성장률, 피크 시즌 요약)가 주어집니다.",
         "이 정보를 바탕으로 향후 유망도가 높은 키워드 5~10개를 선정하고,",
         "각 키워드별로 성장성, 계절성(어느 계절에 강한지), 니치/경쟁도 관점의 코멘트를 한국어로 요약하세요.",
-        "숫자는 대략적인 방향(상승/보통/정체/감소)을 설명하는 데만 사용하고, 과장된 표현은 피합니다.",
+        "",
+        "형식 및 스타일:",
+        "- 마크다운 표, 파이프(|), HTML 태그(<br> 등)은 사용하지 마세요.",
+        "- Plain text만 사용하고, 각 키워드마다 3~4줄 이내로 간결하게 정리합니다.",
+        "- 가능한 한 실제 숫자는 많이 나열하지 말고, '강한 상승/보통/감소'처럼 방향 위주로 설명합니다.",
+        "- 톤은 제품기획자/MD가 쓰는 내부 메모 느낌으로, 과장된 마케팅 문구는 피합니다.",
+        "",
+        "응답 형식:",
+        "1. 키워드명",
+        "   - 성장성: ...",
+        "   - 계절성: ...",
+        "   - 소싱 메모: ...",
+        "",
+        "2. 키워드명",
+        "   - 성장성: ...",
+        "   - 계절성: ...",
+        "   - 소싱 메모: ...",
       ].join("\n");
 
       const userPrompt = [
@@ -223,12 +239,12 @@ export async function POST(request: Request) {
         metricLines,
         "",
         "요청:",
-        "1) 유망도가 높은 키워드 순서대로 5~10개를 리스트업하고,",
-        "2) 각 항목마다 한글 제품기획자 관점에서 '성장성', '계절성', '소싱 관점 코멘트'를 2~3줄로 써주세요.",
+        "- 위에서 제시한 응답 형식을 그대로 따라 주세요.",
+        "- 가장 유망한 키워드부터 순서대로 5~10개만 작성하세요.",
       ].join("\n");
 
       const completion = await groqClient.chat.completions.create({
-        model: "openai/gpt-oss-120b",
+        model: "openai/gpt-oss-20b",
         temperature: 0.35,
         max_tokens: 900,
         top_p: 1,
@@ -250,6 +266,7 @@ export async function POST(request: Request) {
       timeUnit,
       keywords: uniqueKeywords,
       metrics,
+      series,
       analysis,
     });
   } catch (error) {
@@ -270,4 +287,3 @@ export async function POST(request: Request) {
     return NextResponse.json(base, { status: 500 });
   }
 }
-

@@ -21,6 +21,23 @@ const CATEGORY_OPTIONS = [
   { id: "50000015", label: "면세점" },
 ];
 
+const DEVICE_OPTIONS = ["전체", "모바일", "PC"] as const;
+const GENDER_OPTIONS = ["전체", "여성", "남성"] as const;
+const AGE_OPTIONS = [
+  "전체",
+  "~12",
+  "13-18",
+  "19-24",
+  "25-29",
+  "30-34",
+  "35-39",
+  "40-44",
+  "45-49",
+  "50-54",
+  "55-59",
+  "60+",
+] as const;
+
 type KeywordMetrics = {
   keyword: string;
   periods: number;
@@ -38,6 +55,13 @@ type ApiResponse = {
   timeUnit: string;
   keywords: string[];
   metrics: Record<string, KeywordMetrics>;
+  series: Record<
+    string,
+    {
+      period: string;
+      ratio: number;
+    }[]
+  >;
   analysis: string | null;
 };
 
@@ -52,9 +76,13 @@ export default function KeywordToolsPage() {
   const [autoLoading, setAutoLoading] = useState(false);
   const [autoError, setAutoError] = useState<string | null>(null);
   const [timeUnit, setTimeUnit] = useState<"date" | "week" | "month">("month");
+  const [devices, setDevices] = useState<string[]>(["전체"]);
+  const [gender, setGender] = useState<string>("전체");
+  const [ageBuckets, setAgeBuckets] = useState<string[]>(["전체"]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ApiResponse | null>(null);
+  const [seriesKeyword, setSeriesKeyword] = useState<string | null>(null);
 
   useEffect(() => {
     const today = new Date();
@@ -65,6 +93,69 @@ export default function KeywordToolsPage() {
     setStartDate(fromStr);
     setEndDate(to);
   }, []);
+
+  const toggleDevice = (value: string) => {
+    setDevices((prev) =>
+      prev.includes(value)
+        ? prev.filter((v) => v !== value)
+        : [...prev.filter((v) => v !== "전체"), value],
+    );
+  };
+
+  const toggleGender = (value: string) => {
+    setGender(value);
+  };
+
+  const toggleAgeBucket = (value: string) => {
+    setAgeBuckets((prev) => {
+      if (value === "전체") return ["전체"];
+      const withoutAll = prev.filter((v) => v !== "전체");
+      if (withoutAll.includes(value)) {
+        const next = withoutAll.filter((v) => v !== value);
+        return next.length === 0 ? ["전체"] : next;
+      }
+      return [...withoutAll, value];
+    });
+  };
+
+  const mapDeviceToApi = () => {
+    const hasPc = devices.includes("PC");
+    const hasMo = devices.includes("모바일");
+    if (hasPc && hasMo) return "";
+    if (hasPc) return "pc";
+    if (hasMo) return "mo";
+    return "";
+  };
+
+  const mapGenderToApi = () => {
+    if (gender === "여성") return "f";
+    if (gender === "남성") return "m";
+    return "";
+  };
+
+  const mapAgesToApi = () => {
+    const buckets = ageBuckets.filter((v) => v !== "전체");
+    if (buckets.length === 0) return [] as string[];
+    const map: Record<string, string> = {
+      "~12": "10",
+      "13-18": "10",
+      "19-24": "20",
+      "25-29": "20",
+      "30-34": "30",
+      "35-39": "30",
+      "40-44": "40",
+      "45-49": "40",
+      "50-54": "50",
+      "55-59": "50",
+      "60+": "60",
+    };
+    const codes = new Set<string>();
+    for (const b of buckets) {
+      const code = map[b];
+      if (code) codes.add(code);
+    }
+    return Array.from(codes);
+  };
 
   const handleFetchTopKeywords = async () => {
     setAutoError(null);
@@ -80,9 +171,9 @@ export default function KeywordToolsPage() {
         timeUnit,
         startDate,
         endDate,
-        device: "pc",
-        gender: "",
-        age: "",
+        device: mapDeviceToApi(),
+        gender: mapGenderToApi(),
+        age: mapAgesToApi().join(","),
         limit: "10",
       });
       const res = await fetch(`/api/datalab/top-keywords?${params.toString()}`);
@@ -91,8 +182,6 @@ export default function KeywordToolsPage() {
         error?: string;
         bodyPreview?: string;
       };
-      console.log("data top-keywords", data)
-
       if (!res.ok || !data.keywords) {
         throw new Error(
           data.error ||
@@ -135,6 +224,9 @@ export default function KeywordToolsPage() {
           startDate,
           endDate,
           timeUnit,
+          device: mapDeviceToApi(),
+          gender: mapGenderToApi(),
+          ages: mapAgesToApi(),
         }),
       });
 
@@ -281,7 +373,81 @@ export default function KeywordToolsPage() {
             </div>
           </div>
 
-          <button
+          {/* 분석 조건 - Lab 우측 패널과 동일한 구조 */}
+          <div className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-white/80 p-4">
+            <h2 className="text-xs font-semibold text-slate-900">
+              분석 조건 (Lab 우측 패널과 동일)
+            </h2>
+            <div className="grid gap-4 md:grid-cols-3">
+              <div>
+                <p className="mb-1 text-[11px] font-semibold text-slate-500">
+                  범위
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {DEVICE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => toggleDevice(opt)}
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                        devices.includes(opt)
+                          ? "bg-slate-900 text-white"
+                          : "border border-slate-200 bg-white text-slate-700 hover:border-amber-200 hover:text-amber-700"
+                      }`}
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-1 text-[11px] font-semibold text-slate-500">
+                  성별
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {GENDER_OPTIONS.map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => toggleGender(opt)}
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                        gender === opt
+                          ? "bg-slate-900 text-white"
+                          : "border border-slate-200 bg-white text-slate-700 hover:border-amber-200 hover:text-amber-700"
+                      }`}
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-1 text-[11px] font-semibold text-slate-500">
+                  연령 선택
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {AGE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => toggleAgeBucket(opt)}
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                        ageBuckets.includes(opt)
+                          ? "bg-slate-900 text-white"
+                          : "border border-slate-200 bg-white text-slate-700 hover:border-amber-200 hover:text-amber-700"
+                      }`}
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+      <button
             type="submit"
             disabled={loading}
             className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-60"
@@ -359,34 +525,86 @@ export default function KeywordToolsPage() {
                           : "특정 계절 패턴 없음"}
                       </p>
                     </div>
+                    {result.series[m.keyword]?.length ? (
+                      <button
+                        type="button"
+                        onClick={() => setSeriesKeyword(m.keyword)}
+                        className="mt-2 inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-amber-200 hover:text-amber-700"
+                      >
+                        시계열 그래프 보기
+                      </button>
+                    ) : null}
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* 3. 쿠팡 경쟁도 섹션 (현재 환경에서는 크롤링 불가 안내) */}
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-white/70 p-4">
+            {/* 3. 쿠팡 검색 바로가기 섹션 */}
+            <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
               <h2 className="text-sm font-semibold text-slate-900">
-                3. 쿠팡 경쟁도 요약 (테스트 환경)
+                3. 쿠팡 검색 결과 빠르게 열기
               </h2>
               <p className="mt-1 text-[11px] text-slate-500">
-                실제 서비스에서는 각 키워드에 대해 쿠팡 검색 결과를 크롤링해
-                상품 수, 리뷰 수, 가격대, 광고 비율 등을 계산할 예정입니다. 현재
-                이 테스트 환경에서는 Coupang 쪽 접근 제한으로 인해 실제
-                크롤링은 수행하지 않고, UI 구조만 확인하는 단계입니다.
+                현재 환경에서는 쿠팡 측 Access Denied(403)로 인해 자동 크롤링
+                기반 가격 집계는 사용하지 않습니다. 대신 아래 키워드를 클릭하면
+                각 키워드에 대한 쿠팡 검색 결과 페이지를 새 탭에서 바로 열 수
+                있습니다.{" "}
+                <span className="font-semibold">
+                  “Top 10 가격 분포” 기능은 추후 별도 배치/공식 API 환경에서
+                  수집한 데이터를 기반으로 다시 연결할 예정입니다.
+                </span>
               </p>
-              <ul className="mt-3 grid gap-1 text-xs text-slate-700 md:grid-cols-2">
-                {result.keywords.map((kw) => (
+              <ul className="mt-3 grid gap-2 text-xs text-slate-700 md:grid-cols-2">
+              {result.keywords.map((kw) => {
+                const coupangUrl = `https://www.coupang.com/np/search?channel=user&q=${encodeURIComponent(
+                  kw,
+                )}`;
+                const marketplace1688Url = `https://s.1688.com/selloffer/offer_search.htm?keywords=${encodeURIComponent(
+                  kw,
+                )}`;
+                const taobaoUrl = `https://s.taobao.com/search?q=${encodeURIComponent(
+                  kw,
+                )}`;
+
+                return (
                   <li
                     key={kw}
-                    className="rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2"
+                    className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2"
                   >
-                    <span className="font-semibold text-slate-900">{kw}</span>
-                    <span className="ml-1 text-[11px] text-slate-500">
-                      · 쿠팡 경쟁도: (로컬 크롤러 연동 시 실제 데이터 표시 예정)
-                    </span>
+                    <div className="font-semibold text-slate-900">{kw}</div>
+                    <div className="mt-1 flex flex-wrap gap-2 text-[11px]">
+                      <a
+                        href={coupangUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-full bg-slate-900 px-2.5 py-0.5 font-semibold text-white shadow-sm transition hover:bg-slate-800"
+                      >
+                        쿠팡 검색
+                      </a>
+                      <a
+                        href={marketplace1688Url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-full border border-slate-300 px-2.5 py-0.5 font-semibold text-slate-700 transition hover:border-amber-300 hover:text-amber-700"
+                      >
+                        1688 검색
+                      </a>
+                      <a
+                        href={taobaoUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-full border border-slate-300 px-2.5 py-0.5 font-semibold text-slate-700 transition hover:border-amber-300 hover:text-amber-700"
+                      >
+                        타오바오 검색
+                      </a>
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      각 마켓에서 이 키워드로 상단 상품의 가격대, 리뷰 수, 광고
+                      비율 등을 직접 비교해 보면서 소싱 방향을 잡아보세요.
+                    </p>
                   </li>
-                ))}
+                );
+              })}
               </ul>
             </div>
 
@@ -408,6 +626,337 @@ export default function KeywordToolsPage() {
             )}
           </section>
         )}
+
+        {/* 시계열 모달 */}
+        {seriesKeyword && result?.series[seriesKeyword] && (
+          <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 px-4">
+            <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-4 shadow-xl">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    {seriesKeyword} · 시계열 추세
+                  </h2>
+                  <p className="text-[11px] text-slate-500">
+                    기간: {result.startDate} ~ {result.endDate} · timeUnit:{" "}
+                    {result.timeUnit}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSeriesKeyword(null)}
+                  className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 hover:border-amber-200 hover:text-amber-700"
+                >
+                  닫기
+                </button>
+              </div>
+
+              {/* 차트를 카드 좌우 패딩까지 꽉 차게 보이도록 살짝 음수 마진을 줍니다. */}
+              <div className="mt-4 -mx-2 sm:-mx-4">
+                <KeywordSeriesChart
+                  points={result.series[seriesKeyword]}
+                  height={200}
+                  timeUnit={result.timeUnit as "date" | "week" | "month"}
+                  peakMonths={
+                    result.metrics[seriesKeyword]?.peakMonths ?? undefined
+                  }
+                />
+              </div>
+
+              <p className="mt-2 text-[11px] text-slate-500">
+                ratio 값은 해당 기간 내에서 상대적인 클릭 인덱스입니다. 그래프의
+                모양과 피크 구간을 중심으로 트렌드 방향을 확인하세요.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type ChartProps = {
+  points: { period: string; ratio: number }[];
+  height?: number;
+  timeUnit?: "date" | "week" | "month";
+  peakMonths?: number[];
+};
+
+function KeywordSeriesChart({
+  points,
+  height = 180,
+  timeUnit = "month",
+  peakMonths,
+}: ChartProps) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  if (!points || points.length === 0) {
+    return (
+      <div className="flex h-[120px] items-center justify-center text-[11px] text-slate-500">
+        시계열 데이터가 없습니다.
+      </div>
+    );
+  }
+
+  // SVG 내부 논리 폭. viewBox 기준 값이라 실제 렌더 폭은 부모 width 100%를 꽉 채웁니다.
+  // 좌우 여백을 줄이기 위해 기존 360에서 약간 넓혀 레이아웃을 안정화합니다.
+  const width = 480;
+
+  const simplifySeries = (
+    raw: { period: string; ratio: number }[],
+    maxSamples: number,
+  ) => {
+    if (raw.length <= maxSamples) return raw;
+    const bucketSize = Math.ceil(raw.length / maxSamples);
+    const buckets: { period: string; ratio: number }[] = [];
+    for (let i = 0; i < raw.length; i += bucketSize) {
+      const slice = raw.slice(i, i + bucketSize);
+      if (slice.length === 0) continue;
+      const avg =
+        slice.reduce((sum, p) => sum + (Number.isFinite(p.ratio) ? p.ratio : 0), 0) /
+        slice.length;
+      buckets.push({ period: slice[0].period, ratio: avg });
+    }
+    return buckets;
+  };
+
+  const displayPoints =
+    timeUnit === "date" ? simplifySeries(points, 60) : points;
+
+  const maxRatio = Math.max(
+    1,
+    ...displayPoints.map((p) => (Number.isFinite(p.ratio) ? p.ratio : 0)),
+  );
+
+  const stepX =
+    displayPoints.length > 1
+      ? width / (displayPoints.length - 1)
+      : width / 2 || width;
+
+  const coords = displayPoints.map((p, idx) => {
+    const x = stepX * idx;
+    const normalized = p.ratio / maxRatio;
+    const y = height - normalized * (height - 20) - 10;
+    return { x, y, period: p.period, ratio: p.ratio };
+  });
+
+  const pathD = coords
+    .map((c, idx) => `${idx === 0 ? "M" : "L"} ${c.x} ${c.y}`)
+    .join(" ");
+
+  const first = points[0];
+  const last = points[points.length - 1];
+
+  const maxPoint = points.reduce((acc, cur) =>
+    cur.ratio > acc.ratio ? cur : acc,
+  );
+
+  const peakSet = new Set<number>(peakMonths ?? []);
+
+  type Region = { month: number; minX: number; maxX: number };
+  const monthRegionsMap = new Map<number, Region>();
+
+  displayPoints.forEach((p, idx) => {
+    const month = Number.parseInt(p.period.slice(5, 7), 10);
+    if (!peakSet.has(month)) return;
+    const x = coords[idx].x;
+    const region = monthRegionsMap.get(month);
+    if (!region) {
+      monthRegionsMap.set(month, { month, minX: x, maxX: x });
+    } else {
+      region.minX = Math.min(region.minX, x);
+      region.maxX = Math.max(region.maxX, x);
+    }
+  });
+
+  const monthRegions = Array.from(monthRegionsMap.values());
+
+  const formatLabelDate = (period: string) => {
+    const [y, m, d] = period.split("-");
+    if (timeUnit === "month") return `${y}-${m}`;
+    if (timeUnit === "week") return `${m}/${d}`;
+    // date
+    return `${m}/${d}`;
+  };
+
+  const tickCount = Math.min(4, coords.length);
+  const tickIndices: number[] = [];
+  if (tickCount === 1) {
+    tickIndices.push(0);
+  } else {
+    const step = (coords.length - 1) / (tickCount - 1);
+    for (let i = 0; i < tickCount; i += 1) {
+      tickIndices.push(Math.round(step * i));
+    }
+  }
+
+  return (
+    <div className="w-full">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="h-[200px] w-full text-slate-400"
+        onMouseMove={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const xPx = e.clientX - rect.left;
+          const xView = (xPx / rect.width) * width;
+          let bestIdx = 0;
+          let bestDist = Infinity;
+          coords.forEach((c, idx) => {
+            const d = Math.abs(c.x - xView);
+            if (d < bestDist) {
+              bestDist = d;
+              bestIdx = idx;
+            }
+          });
+          setHoverIndex(bestIdx);
+        }}
+        onMouseLeave={() => setHoverIndex(null)}
+      >
+        {/* 피크 시즌 하이라이트 영역 */}
+        {monthRegions.map((r) => {
+          const regionWidth = Math.max(stepX, r.maxX - r.minX + stepX);
+          const regionX = r.minX - stepX / 2;
+          return (
+            <rect
+              key={`region-${r.month}`}
+              x={Math.max(0, regionX)}
+              y={0}
+              width={Math.min(width, regionWidth)}
+              height={height}
+              fill="#f97316"
+              fillOpacity={0.06}
+            />
+          );
+        })}
+
+        {/* baseline */}
+        <line
+          x1={0}
+          y1={height - 10}
+          x2={width}
+          y2={height - 10}
+          stroke="#e2e8f0"
+          strokeWidth={1}
+        />
+        {/* path */}
+        <path
+          d={pathD}
+          fill="none"
+          stroke="#f97316"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {/* points */}
+        {coords.map((c, idx) => (
+          <circle
+            key={`${c.period}-${idx}`}
+            cx={c.x}
+            cy={c.y}
+            r={displayPoints.length > 80 ? 1.5 : 2.5}
+            fill="#f97316"
+          />
+        ))}
+        {/* x 축 눈금 + 레이블 */}
+        {tickIndices.map((i) => {
+          const c = coords[i];
+          const p = displayPoints[i];
+          return (
+            <g key={`tick-${p.period}-${i}`}>
+              <line
+                x1={c.x}
+                y1={height - 10}
+                x2={c.x}
+                y2={height - 5}
+                stroke="#cbd5f5"
+                strokeWidth={1}
+              />
+              <text
+                x={c.x}
+                y={height - 2}
+                textAnchor="middle"
+                fontSize={9}
+                fill="#94a3b8"
+              >
+                {formatLabelDate(p.period)}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* hover indicator */}
+        {hoverIndex != null && coords[hoverIndex] && (
+          <>
+            {(() => {
+              const c = coords[hoverIndex];
+              const p = displayPoints[hoverIndex];
+              const tooltipWidth = 120;
+              const tooltipHeight = 40;
+              const baseX = Math.min(
+                width - tooltipWidth - 4,
+                Math.max(4, c.x + 8),
+              );
+              const baseY = 10;
+              return (
+                <>
+                  <line
+                    x1={c.x}
+                    y1={0}
+                    x2={c.x}
+                    y2={height}
+                    stroke="#94a3b8"
+                    strokeWidth={1}
+                    strokeDasharray="4 3"
+                  />
+                  <circle
+                    cx={c.x}
+                    cy={c.y}
+                    r={4}
+                    fill="#ffffff"
+                    stroke="#f97316"
+                    strokeWidth={2}
+                  />
+                  <rect
+                    x={baseX}
+                    y={baseY}
+                    width={tooltipWidth}
+                    height={tooltipHeight}
+                    rx={6}
+                    fill="#ffffff"
+                    stroke="#cbd5f5"
+                    strokeWidth={1}
+                    filter="url(#shadow-none)"
+                  />
+                  <text
+                    x={baseX + 8}
+                    y={baseY + 15}
+                    fontSize={9}
+                    fill="#0f172a"
+                  >
+                    {p.period}
+                  </text>
+                  <text
+                    x={baseX + 8}
+                    y={baseY + 28}
+                    fontSize={9}
+                    fill="#64748b"
+                  >
+                    {p.ratio.toFixed(1)}
+                  </text>
+                </>
+              );
+            })()}
+          </>
+        )}
+      </svg>
+      <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-slate-500 md:grid-cols-3">
+        <span>
+          시작: {first.period} ({first.ratio.toFixed(1)})
+        </span>
+        <span>
+          마지막: {last.period} ({last.ratio.toFixed(1)})
+        </span>
+        <span>
+          최대: {maxPoint.period} ({maxPoint.ratio.toFixed(1)})
+        </span>
       </div>
     </div>
   );

@@ -75,9 +75,12 @@ export function normalizeNaverKeyword(raw: string): string {
   // 1) 맨 끝에 붙는 브랜드/내부 코드 (영문+숫자) 제거
   cleaned = cleaned.replace(/[a-zA-Z]{2,}\d{0,}$/g, "").trim();
 
-  // 2) 중간 이후에 등장하는 숫자(예: 5부, 7부 등) 이후는 잘라냄
-  //    "남성반바지면반바지5부팬츠카고반바지" -> "남성반바지면반바지"
-  cleaned = cleaned.replace(/\d.*$/, "").trim();
+  // 2) 중간 이후에 등장하는 숫자(예: 5부, 7부 등)가 아주 긴 문자열 안에 섞여 있으면
+  //    그 지점 이후를 잘라냅니다. 다만 "k2패딩" 같이 짧은 브랜드+숫자 패턴은 그대로 둡니다.
+  const digitMatch = cleaned.match(/\d/);
+  if (digitMatch && cleaned.length > 12 && digitMatch.index !== undefined && digitMatch.index >= 4) {
+    cleaned = cleaned.slice(0, digitMatch.index).trim();
+  }
 
   // 3) 대표 상품 토큰 기준으로 끊기
   const baseTokens = [
@@ -143,7 +146,7 @@ export async function fetchTopKeywords(params: QueryParams) {
     let data: NaverResponse;
     try {
       data = (await res.json()) as NaverResponse;
-    } catch (err) {
+    } catch {
       const snippet = (await res.text()).slice(0, 200);
       throw new Error(
         `Naver returned non-JSON. status=${res.status} body=${snippet}`,

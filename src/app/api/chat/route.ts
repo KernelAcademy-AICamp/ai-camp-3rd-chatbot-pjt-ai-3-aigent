@@ -1,14 +1,285 @@
 import { NextResponse } from "next/server";
 import { groqClient, getGroqContent } from "@/lib/groq";
+import {
+  DatalabParams,
+  runKeywordAnalysisTransaction,
+  KeywordStats,
+} from "@/lib/datalab-run";
+
+/**
+ * 오른쪽 패널에서 넘어온 기본 분석 조건(datalabParams)과
+ * 마지막 사용자 메시지 내용을 바탕으로,
+ * 실제 DataLab 분석에 사용할 파라미터를 보정한다.
+ *
+ * - "키워드 분석 조건:" 스니펫이 있으면 패널 값 기준으로 그대로 사용.
+ * - "2023년", "23년도", "이번년도" 등 연도 표현이 있고 스니펫이 없으면
+ *   해당 연도 전체(1월1일~12월31일)로 기간을 보정.
+ * - 패딩/후드티 등 의류 토큰이 있으면 카테고리를 패션의류로 강제 매핑.
+ */
+function inferDatalabParams(
+  base: DatalabParams | undefined,
+  lastUserMessage: string,
+): DatalabParams | null {
+  if (!base) return null;
+
+  const msg = lastUserMessage || "";
+
+  const hasSnippet = msg.includes("키워드 분석 조건:");
+
+  // 4자리 연도 (예: 2021년, 2023년도)
+  const year4Match = msg.match(/(20\d{2})\s*년?도?/);
+
+  // 2자리 연도 (예: 21년도, 23년) -> 2017~2035 범위로 해석
+  let year2: number | null = null;
+  if (!year4Match) {
+    const m2 = msg.match(/\b(\d{2})\s*년?도?\b/);
+    if (m2) {
+      const num = Number.parseInt(m2[1], 10);
+      if (Number.isFinite(num)) {
+        const candidate = 2000 + num;
+        if (candidate >= 2017 && candidate <= 2035) {
+          year2 = candidate;
+        }
+      }
+    }
+  }
+
+  // "이번년도", "올해" 같은 표현은 현재 연도로 해석
+  const thisYearExpressions = /(이번\s*년?도?|올해)/;
+  const hasThisYear = thisYearExpressions.test(msg);
+
+  const hasYear = Boolean(year4Match || year2 || hasThisYear);
+
+  const wantsDataKeywords = [
+    "검색량",
+    "트렌드",
+    "데이터랩",
+    "네이버 데이터",
+    "키워드 발굴",
+    "키워드 분석",
+  ];
+  const wantsData =
+    hasSnippet ||
+    hasYear ||
+    wantsDataKeywords.some((t) => msg.includes(t));
+
+  // 사용자가 단지 "제품명 추천"만 요청한 경우에는 DataLab 트랜잭션을 실행하지 않습니다.
+  if (!wantsData) return null;
+
+  const params: DatalabParams = {
+    dateFrom: base.dateFrom,
+    dateTo: base.dateTo,
+    devices: [...base.devices],
+    gender: base.gender,
+    ageBuckets: [...base.ageBuckets],
+    categories: [...base.categories],
+  };
+
+  // 1) "2023년", "23년도" 등 연도 기반 분석 요청이면 기간을 해당 연도로 맞춥니다.
+  let year =
+    year4Match && Number.parseInt(year4Match[1], 10)
+      ? Number.parseInt(year4Match[1], 10)
+      : year2;
+
+  // 오른쪽 패널에서 이미 기간을 명시적으로 넣어준 경우(스니펫 사용)에는
+  // 자연어에 등장하는 연도 표현으로 기간을 다시 덮어쓰지 않습니다.
+  // 반대로 스니펫이 없고 "23년도", "이번년도" 같은 표현만 있는 경우에만
+  // 연도 전체(1월1일~12월31일)로 기간을 보정합니다.
+  if (!hasSnippet) {
+    if (!year && hasThisYear) {
+      year = new Date().getFullYear();
+    }
+
+    if (year && Number.isFinite(year) && year >= 2017 && year <= 2035) {
+      params.dateFrom = `${year}-01-01`;
+      params.dateTo = `${year}-12-31`;
+    }
+  }
+
+  // 2) 의류/패션 관련 키워드가 등장하면 네이버 1분류 "패션의류"로 카테고리를 바꿉니다.
+  const apparelTokens = [
+    "의류",
+    "옷",
+    "패딩",
+    "코트",
+    "자켓",
+    "재킷",
+    "후드",
+    "후드티",
+    "맨투맨",
+    "티셔츠",
+    "셔츠",
+    "바지",
+    "청바지",
+    "스커트",
+    "원피스",
+    "잠바",
+    "점퍼",
+    "야상",
+  ];
+
+  if (apparelTokens.some((t) => msg.includes(t))) {
+    if (!params.categories.includes("패션의류")) {
+      params.categories = ["패션의류"];
+    }
+  }
+
+  return params;
+}
+
+/**
+ * DataLab 분석을 실제로 실행할지 여부를 LLM에 위임해 판단한다.
+ * - 휴리스틱상 후보이지만 단순 네이밍/카피 요청일 수 있는 경우에 사용.
+ * - JSON 한 줄(`{"should_run": true}`)만 허용하며,
+ *   파싱 실패 시에는 보수적으로 true(실행)로 간주한다.
+ */
+async function decideDatalabByLLM(
+  message: string,
+  params: DatalabParams,
+): Promise<boolean> {
+  // groqClient 가 없으면 기본적으로 실행 쪽으로 둡니다.
+  if (!groqClient) return true;
+
+  const summaryLines = [
+    `기간: ${params.dateFrom || "미지정"} ~ ${params.dateTo || "미지정"}`,
+    `디바이스: ${params.devices.join("/") || "전체"}`,
+    `성별: ${params.gender || "전체"}`,
+    `연령: ${params.ageBuckets.join(", ") || "전체"}`,
+    `카테고리: ${params.categories.join(", ") || "전체"}`,
+  ].join("\n");
+
+  const systemPrompt = [
+    "당신은 라우팅 전담 어시스턴트입니다.",
+    "사용자가 방금 입력한 질문이 '네이버 데이터랩 시계열/Top 키워드 분석'까지 실제로 실행해야 하는지 판단하세요.",
+    "",
+    "DataLab 분석이 필요한 경우:",
+    "- 과거/미래 트렌드, 검색량, 성장률, 피크 시즌 등 '데이터 기반' 설명이 명시적으로 필요할 때",
+    "- '어떤 키워드가 잘 나가?', '최근/작년/올해 트렌드', '네이버 데이터랩으로 분석해 줘' 같은 요청인 경우",
+    "",
+    "DataLab 분석이 필요 없는 경우:",
+    "- 단순 제품명/카피라이팅 추천, 문장 다듬기, 키워드 조합 아이디어 정도만 요청한 경우",
+    "",
+    "답변은 반드시 JSON 한 줄로만 출력하세요. 예:",
+    `{\"should_run\": true}`,
+    `{\"should_run\": false}`,
+  ].join("\n");
+
+  const userPrompt = [
+    "사용자 질문:",
+    message,
+    "",
+    "현재 기본 분석 조건:",
+    summaryLines,
+  ].join("\n");
+
+  try {
+    const completion = await groqClient.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      temperature: 0,
+      max_tokens: 40,
+      top_p: 1,
+      stream: false,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+
+    const content =
+      getGroqContent(completion.choices?.[0]?.message?.content) ?? "";
+    if (!content) return true;
+
+    const trimmed = content.trim();
+    const jsonStart = trimmed.indexOf("{");
+    const jsonEnd = trimmed.lastIndexOf("}");
+    if (jsonStart === -1 || jsonEnd === -1) return true;
+
+    const jsonStr = trimmed.slice(jsonStart, jsonEnd + 1);
+    const parsed = JSON.parse(jsonStr) as { should_run?: boolean };
+    return parsed.should_run ?? true;
+  } catch (err) {
+    // 라우팅 판단 실패 시에는 보수적으로 실행 쪽으로 둡니다.
+    console.error("Datalab routing LLM error", err);
+    return true;
+  }
+}
+
+type QuestionType = "trend" | "strategy" | "naming" | "other";
+
+/**
+ * 사용자의 마지막 메시지를 기반으로 질문 타입을 분류한다.
+ * - trend: 시장/검색 트렌드·시즌성 중심 질문
+ * - strategy: 소싱/포지셔닝/마진 전략이 핵심인 질문
+ * - naming: 제품명/카피라이팅이 핵심인 요청
+ * - other: 일반 대화 또는 위에 속하지 않는 경우
+ *
+ * 분류 결과는 system 프롬프트와 chat_messages.meta.question_type 에 기록된다.
+ */
+async function classifyQuestionType(message: string): Promise<QuestionType> {
+  if (!groqClient) return "other";
+  const trimmed = (message || "").trim();
+  if (!trimmed) return "other";
+
+  const systemPrompt = [
+    "당신은 질문을 분류하는 어시스턴트입니다.",
+    "아래 사용자 메시지가 어떤 목적에 가까운지 판단하세요.",
+    "",
+    "분류 기준:",
+    "- trend: 과거/현재/미래 트렌드, 검색량, 성장률, 피크 시즌, '언제 잘 팔렸어?' 같은 시장/데이터 흐름 설명 요청",
+    "- strategy: 어떤 상품을 소싱·기획·포지셔닝하면 좋을지, 마진/경쟁도/타깃 관점의 전략이 핵심인 경우",
+    "- naming: 제품명·카피라이팅·키워드 조합(예: '제품명 5개만 뽑아줘', '좀 더 프리미엄 느낌으로 이름 바꿔줘')이 핵심인 경우",
+    "- other: 위에 딱 맞지 않는 일반 대화/설명 요청",
+    "",
+    "반드시 JSON 형식으로만 답변하세요. 예:",
+    `{\"type\": \"trend\"}`,
+    `{\"type\": \"strategy\"}`,
+    `{\"type\": \"naming\"}`,
+    `{\"type\": \"other\"}`,
+  ].join("\n");
+
+  const userPrompt = `사용자 메시지:\n${trimmed}`;
+
+  try {
+    const completion = await groqClient.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      temperature: 0,
+      max_tokens: 40,
+      top_p: 1,
+      stream: false,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+
+    const content =
+      getGroqContent(completion.choices?.[0]?.message?.content) ?? "";
+    const text = content.trim();
+    const jsonStart = text.indexOf("{");
+    const jsonEnd = text.lastIndexOf("}");
+    if (jsonStart === -1 || jsonEnd === -1) return "other";
+    const jsonStr = text.slice(jsonStart, jsonEnd + 1);
+    const parsed = JSON.parse(jsonStr) as { type?: QuestionType };
+    const t = parsed.type;
+    if (t === "trend" || t === "strategy" || t === "naming" || t === "other") {
+      return t;
+    }
+    return "other";
+  } catch (err) {
+    console.error("Question type classification error", err);
+    return "other";
+  }
+}
 import { getSupabaseClient } from "@/lib/supabase";
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { productName, target, focus, messages } = body as {
+  const { productName, target, focus, messages, datalabParams } = body as {
     productName?: string;
     target?: string;
     focus?: string[];
     messages?: { role: "user" | "assistant"; content: string }[];
+    datalabParams?: DatalabParams;
   };
 
   if (!groqClient) {
@@ -32,6 +303,12 @@ export async function POST(request: Request) {
     "스타일:",
     "- 실제 검색에 쓰일 수 있는 자연스러운 단어 위주로 제안합니다.",
     "- 과도한 감탄사나 이모지는 사용하지 않습니다.",
+    "",
+    "질문 유형에 따른 응답 가이드:",
+    "- 질문 유형이 'trend'이면: 시장/검색 트렌드와 계절성을 중심으로 설명하고, 필요 시 유망 키워드를 3~5개 정도 제안합니다. 바로 제품명 리스트만 길게 나열하지 마세요.",
+    "- 질문 유형이 'strategy'이면: 어느 포지션/타깃/가격대가 유리한지, 어떤 키워드를 잡고 소싱해야 할지 전략적 관점에서 정리합니다. 제품명 예시는 2~3개 정도만 간단히.",
+    "- 질문 유형이 'naming'이면: 제품명·카피 작성에 집중하고, 트렌드 설명은 짧게만 언급합니다.",
+    "- 질문 유형이 'other'이면: 사용자의 의도를 파악한 뒤, 필요한 경우 위 세 유형 중 하나로 자연스럽게 방향을 제안합니다.",
   ].join("\n");
 
   const history =
@@ -42,11 +319,208 @@ export async function POST(request: Request) {
         }))
       : [];
 
+  let datalabSummary: string | null = null;
+  let datalabDebug:
+    | {
+        categoryId: string;
+        startDate: string;
+        endDate: string;
+        timeUnit: string;
+        keywords: string[];
+        analysisRunId: number | null;
+      }
+    | null = null;
+
+  const lastUserMessage =
+    history
+      .filter((m) => m.role === "user")
+      .slice(-1)
+      .map((m) => m.content)[0] ?? "";
+
+  const effectiveDatalabParams = inferDatalabParams(
+    datalabParams,
+    lastUserMessage,
+  );
+
+  const questionType = await classifyQuestionType(lastUserMessage);
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[Datalab][routing] questionType:", questionType, {
+      hasBaseParams: Boolean(datalabParams),
+      hasEffectiveParams: Boolean(effectiveDatalabParams),
+      lastUserSnippet: lastUserMessage.slice(0, 80),
+    });
+  }
+
+  if (
+    effectiveDatalabParams &&
+    effectiveDatalabParams.dateFrom &&
+    effectiveDatalabParams.dateTo &&
+    Array.isArray(effectiveDatalabParams.categories) &&
+    effectiveDatalabParams.categories.length > 0
+  ) {
+    try {
+      let shouldRun = true;
+
+      // 오른쪽 패널 스니펫이 명시적으로 붙은 경우에는 LLM 라우팅 없이 바로 실행.
+      const hasSnippet = lastUserMessage.includes("키워드 분석 조건:");
+
+      // 질문이 길고(맥락이 많고), 스니펫은 없고, 휴리스틱으로는 DataLab 후보인 경우에만
+      // LLM 라우터에게 한 번 더 물어본다.
+      if (!hasSnippet && lastUserMessage.length > 40) {
+        shouldRun = await decideDatalabByLLM(
+          lastUserMessage,
+          effectiveDatalabParams,
+        );
+
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[Datalab][routing] LLM router decision:", {
+            shouldRun,
+          });
+        }
+      }
+
+      if (!shouldRun) {
+        datalabSummary = null;
+      } else {
+        // 1) 네이버 DataLab 분석 트랜잭션 실행
+        //    - Top 키워드 크롤링
+        //    - 시계열 + 성장성/계절성 지표 계산
+        //    - analysis_runs 로그 저장
+        const result = await runKeywordAnalysisTransaction(
+          effectiveDatalabParams,
+        );
+
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[Datalab][analysis] success", {
+            categoryId: result.categoryId,
+            startDate: result.startDate,
+            endDate: result.endDate,
+            timeUnit: result.timeUnit,
+            keywordCount: result.keywords.length,
+            analysisRunId: result.analysisRunId,
+          });
+        }
+
+        const growthLabel = (g: KeywordStats["growthRatio"]) => {
+          if (!g || !Number.isFinite(g)) return "데이터 부족";
+          const pct = (g - 1) * 100;
+          if (pct > 20) return `강한 상승 (+${pct.toFixed(1)}%)`;
+          if (pct > 5) return `완만한 상승 (+${pct.toFixed(1)}%)`;
+          if (pct > -5) return `보합 (${pct.toFixed(1)}%)`;
+          if (pct > -20) return `완만한 감소 (${pct.toFixed(1)}%)`;
+          return `강한 감소 (${pct.toFixed(1)}%)`;
+        };
+
+        // growthRatio 기준으로 키워드를 세 그룹으로 나눠
+        // LLM이 "유망 후보 vs 참고용"을 더 쉽게 구분할 수 있도록 한다.
+        const metricsArray = Object.values(result.metrics);
+
+        const upwardCandidates = metricsArray
+          .filter((m) => m.growthRatio && m.growthRatio >= 1.05)
+          .sort(
+            (a, b) => (b.growthRatio ?? 0) - (a.growthRatio ?? 0),
+          );
+
+        const stableCandidates = metricsArray
+          .filter(
+            (m) =>
+              m.growthRatio &&
+              m.growthRatio >= 0.95 &&
+              m.growthRatio < 1.05,
+          )
+          .sort(
+            (a, b) => (b.growthRatio ?? 0) - (a.growthRatio ?? 0),
+          );
+
+        const decliningCandidates = metricsArray
+          .filter((m) => !m.growthRatio || m.growthRatio < 0.95)
+          .sort(
+            (a, b) => (a.growthRatio ?? 0) - (b.growthRatio ?? 0),
+          );
+
+        const candidateLines: string[] = [];
+
+        if (upwardCandidates.length > 0) {
+          candidateLines.push(
+            `- 최근 모멘텀이 있는 키워드(성장률 기준 상위): ${upwardCandidates
+              .slice(0, 5)
+              .map((m) => m.keyword)
+              .join(", ")}`,
+          );
+        } else if (stableCandidates.length > 0) {
+          candidateLines.push(
+            `- 최근 보합·완만한 상승 키워드: ${stableCandidates
+              .slice(0, 5)
+              .map((m) => m.keyword)
+              .join(", ")}`,
+          );
+        }
+
+        if (decliningCandidates.length > 0) {
+          candidateLines.push(
+            `- 감소/성숙 키워드(참고용): ${decliningCandidates
+              .slice(0, 5)
+              .map((m) => m.keyword)
+              .join(", ")}`,
+          );
+        }
+
+        const keywordLines = metricsArray
+          .map((m) => {
+            const peaks =
+              m.peakMonths.length > 0
+                ? m.peakMonths.map((mm) => `${mm}월`).join(", ")
+                : "특정 계절 패턴 없음";
+            return `- ${m.keyword}: ${growthLabel(
+              m.growthRatio,
+            )}, 피크 시즌 ${peaks}`;
+          })
+          .join("\n");
+
+        datalabSummary = [
+          "[데이터 기반 키워드 분석 요약]",
+          `- 분석 기간: ${result.startDate} ~ ${result.endDate} (timeUnit=${result.timeUnit})`,
+          `- 분석 카테고리 ID: ${result.categoryId}`,
+          `- Top 키워드: ${result.keywords.join(", ")}`,
+          ...(candidateLines.length
+            ? ["- 성장성 기준 요약:", ...candidateLines]
+            : []),
+          "- 키워드별 성장/계절성:",
+          keywordLines,
+        ].join("\n");
+
+        datalabDebug = {
+          categoryId: result.categoryId,
+          startDate: result.startDate,
+          endDate: result.endDate,
+          timeUnit: result.timeUnit,
+          keywords: result.keywords,
+          analysisRunId: result.analysisRunId,
+        };
+      }
+    } catch (err) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[Datalab][analysis] failed", err);
+      } else {
+        console.error("Datalab analysis failed", err);
+      }
+      const message =
+        err instanceof Error ? err.message : "알 수 없는 오류가 발생했습니다.";
+      datalabSummary = [
+        "[데이터 기반 키워드 분석 실패]",
+        "- 현재 설정된 기간/카테고리 조건으로는 네이버 DataLab Top 키워드/트렌드 데이터를 가져오지 못했습니다.",
+        "- 사용자가 원한다면, 기간을 조금 넓히거나 카테고리/상품군을 더 구체적으로 지정하도록 부드럽게 요청한 뒤 다시 분석을 제안하세요.",
+        `- 내부 에러 메시지: ${message}`,
+      ].join("\n");
+    }
+  }
+
   try {
     const completion = await groqClient.chat.completions.create({
-      model: "openai/gpt-oss-120b",
+      model: "openai/gpt-oss-20b",
       temperature: 0.45,
-      max_tokens: 1200,
+      max_tokens: 2400,
       top_p: 1,
       stream: false,
       messages: [
@@ -58,6 +532,18 @@ export async function POST(request: Request) {
             `- 기본 제품명: ${productName || "사용자가 대화에서 지정"}`,
             `- 타깃/상황: ${target || "사용자가 대화에서 지정"}`,
             `- 강조 포인트: ${focusText}`,
+            `- 질문 유형: ${questionType}`,
+            datalabSummary
+              ? [
+                  "\n[추가 데이터] 네이버 데이터랩 기반 키워드 분석 요약이 포함되어 있습니다. 아래 내용을 참고해 추천의 근거로 활용하세요.",
+                  datalabSummary,
+                  "",
+                  "[응답 시 데이터 활용 원칙]",
+                  "- '강한 상승' 또는 '완만한 상승', '보합'으로 표시된 키워드를 우선 유망 후보로 사용하세요.",
+                  "- '완만한 감소'나 '강한 감소' 키워드는 이미 성숙·하락 구간일 수 있으므로, 직접적인 추천보다는 '지난 시즌에 강했음/참고용' 정도로만 언급합니다.",
+                  "- 숫자(성장률, 퍼센트)를 그대로 반복해서 나열하기보다는, 상승/보합/감소 방향과 계절성, 니치 여부를 중심으로 정리하세요.",
+                ].join("\n")
+              : "",
             "",
             "대화 기록을 참고해, 사용자의 최신 메시지에 맞는 추천 제품명을 작성하세요.",
             "응답 형식 (각 제품명 사이에는 빈 줄 하나를 넣어주세요):",
@@ -77,16 +563,52 @@ export async function POST(request: Request) {
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      // 로깅은 실패해도 사용자 응답에는 영향을 주지 않도록 await 하지 않습니다.
-      void supabase.from("chat_logs").insert({
+      const logPayload: Record<string, unknown> = {
         product_name: productName,
         target,
         focus: focusText,
         reply,
-      });
+        // TODO: 추후 model_id, latency_ms, session_id, project_id 등을 채워넣을 수 있음.
+      };
+
+      if (datalabDebug?.analysisRunId != null) {
+        // chat_logs 테이블에 analysis_run_id 컬럼이 있다고 가정하고 기록합니다.
+        logPayload.analysis_run_id = datalabDebug.analysisRunId;
+      }
+
+      // 로깅은 실패해도 사용자 응답에는 영향을 주지 않도록 await 하지 않습니다.
+      void supabase.from("chat_logs").insert(logPayload);
+
+      const assistantMeta =
+        datalabDebug?.analysisRunId != null
+          ? { analysis_run_id: datalabDebug.analysisRunId, question_type: questionType }
+          : { question_type: questionType };
+
+      const userMeta =
+        datalabDebug?.analysisRunId != null
+          ? { analysis_run_id: datalabDebug.analysisRunId, question_type: questionType }
+          : { question_type: questionType };
+
+      // chat_messages 테이블이 존재한다고 가정하고, 마지막 user 메시지와 이번 assistant 응답을 함께 저장합니다.
+      if (lastUserMessage) {
+        void supabase.from("chat_messages").insert([
+          {
+            session_id: null,
+            role: "user",
+            content: lastUserMessage,
+            meta: userMeta,
+          },
+          {
+            session_id: null,
+            role: "assistant",
+            content: reply,
+            meta: assistantMeta,
+          },
+        ]);
+      }
     }
 
-    return NextResponse.json({ reply });
+    return NextResponse.json({ reply, datalabDebug });
   } catch (error) {
     console.error("Groq chat error", error);
 

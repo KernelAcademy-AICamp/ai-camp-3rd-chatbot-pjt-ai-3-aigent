@@ -19,7 +19,7 @@
   - `sourcing_projects`, `chat_sessions`, `chat_messages`
   - 키워드/분석 관련 테이블 (`keyword_*`, `analysis_runs`, `analysis_run_keywords`, `market_keyword_stats` 등)
 - **외부 API**
-  - Groq(OpenAI 호환) – `openai/gpt-oss-120b` 등 LLM 모델
+  - Groq(OpenAI 호환) – `openai/gpt-oss-20b` 등 LLM 모델
   - Naver DataLab Shopping Insight – 카테고리/키워드 트렌드 조회
   - 쿠팡 (공식/비공식 API 또는 스크래핑) – 상품 검색 결과·경쟁도 수집
 
@@ -144,7 +144,7 @@ type ChatResponse = {
 ```
 
 - **동작**
-  - Groq `openai/gpt-oss-120b` 모델 호출.
+  - Groq `openai/gpt-oss-20b` 모델 호출.
   - 시스템 프롬프트에:
     - 소싱 전문가 역할,
     - 인사/설명 처리 규칙,
