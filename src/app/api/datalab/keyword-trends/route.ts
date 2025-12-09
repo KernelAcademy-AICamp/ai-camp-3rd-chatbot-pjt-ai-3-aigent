@@ -5,7 +5,7 @@ import {
 } from "@/lib/naver";
 import { groqClient, getGroqContent } from "@/lib/groq";
 import {
-  analyzeTrend,
+  analyzeAdvancedTrend,
   TrendAnalysisResult,
 } from "@/lib/timeseries-analysis";
 
@@ -172,8 +172,8 @@ export async function POST(request: Request) {
       monthAverages.sort((a, b) => b.avg - a.avg);
       const peakMonths = monthAverages.slice(0, 3).map((m) => m.month);
 
-      // 시계열 머신러닝 분석 수행
-      const trendAnalysis = analyzeTrend(sorted);
+      // 시계열 머신러닝 분석 수행 (고급 분석 포함)
+      const trendAnalysis = analyzeAdvancedTrend(sorted);
 
       metrics[kw] = {
         keyword: kw,
@@ -221,8 +221,8 @@ export async function POST(request: Request) {
             growthPercent === null
               ? "성장률: 데이터 부족"
               : `성장률: 최근 대비 직전 기간 약 ${growthPercent.toFixed(
-                  1,
-                )}%`;
+                1,
+              )}%`;
 
           // 시계열 분석 결과 추가
           const trendKor: Record<string, string> = {

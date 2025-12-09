@@ -8,7 +8,7 @@ import {
 } from "@/lib/naver-top-keywords";
 import { getSupabaseClient } from "@/lib/supabase";
 import {
-  analyzeTrend,
+  analyzeAdvancedTrend,
   type DataPoint,
   type TrendAnalysisResult,
 } from "@/lib/timeseries-analysis";
@@ -424,7 +424,7 @@ async function runCategoryKeywordTrendAnalysis({
       period: p.period,
       ratio: p.ratio,
     }));
-    metrics[kw].trendAnalysis = analyzeTrend(dataPoints);
+    metrics[kw].trendAnalysis = analyzeAdvancedTrend(dataPoints);
   }
 
   return {

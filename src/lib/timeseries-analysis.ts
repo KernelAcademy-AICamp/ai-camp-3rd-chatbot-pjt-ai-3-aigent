@@ -4,11 +4,61 @@
  * - 지수평활법 (Exponential Smoothing)
  * - Holt-Winters 모델 (트렌드 + 계절성)
  * - Mann-Kendall 트렌드 검정
+ * - LOESS 평활화 (Locally Estimated Scatterplot Smoothing)
+ * - STL 분해 (Seasonal-Trend decomposition using LOESS)
+ * - 이상치 탐지 (Anomaly Detection)
+ * - 모멘텀 분석 (Momentum Analysis)
+ * - 다중 모델 앙상블 (Ensemble Forecasting)
  */
 
 export type DataPoint = {
   period: string;
   ratio: number;
+};
+
+// STL 분해 결과
+export type STLDecomposition = {
+  trend: number[];
+  seasonal: number[];
+  residual: number[];
+  seasonalStrength: number; // 계절성 강도 (0~1)
+  trendStrength: number; // 트렌드 강도 (0~1)
+};
+
+// 모멘텀 분석 결과
+export type MomentumAnalysis = {
+  shortMA: number[]; // 단기 이동평균
+  longMA: number[]; // 장기 이동평균
+  macd: number[]; // MACD (단기 - 장기)
+  signal: string; // "bullish" | "bearish" | "neutral"
+  crossoverType: "golden_cross" | "death_cross" | "none";
+  rsi: number; // 상대강도지수 (0~100)
+  momentum: number; // 현재 모멘텀 값
+};
+
+// 이상치 탐지 결과
+export type AnomalyDetection = {
+  anomalies: { index: number; value: number; zscore: number }[];
+  cleanedData: number[];
+  anomalyRatio: number; // 이상치 비율
+};
+
+// 앙상블 예측 결과
+export type EnsembleForecast = {
+  forecast: number[];
+  forecastDates: string[]; // 예측 날짜 (YYYY-MM-DD 형식)
+  confidenceInterval: { lower: number[]; upper: number[] };
+  modelWeights: Record<string, number>;
+  consensusStrength: number; // 모델 간 합의 정도 (0~1)
+  lastDataDate: string; // 마지막 데이터 날짜
+};
+
+// 정확도 메트릭
+export type AccuracyMetrics = {
+  mape: number; // Mean Absolute Percentage Error
+  rmse: number; // Root Mean Square Error
+  mae: number; // Mean Absolute Error
+  mase: number; // Mean Absolute Scaled Error
 };
 
 export type TrendAnalysisResult = {
@@ -32,6 +82,7 @@ export type TrendAnalysisResult = {
     trend: number;
     seasonalFactors: number[];
     forecast: number[]; // 다음 3개 기간 예측
+    forecastDates?: string[]; // 예측 날짜 (YYYY-MM-DD)
     seasonalStrength: number; // 계절성 강도 (0~1)
   };
   // Mann-Kendall 트렌드 검정
@@ -54,6 +105,17 @@ export type TrendAnalysisResult = {
     seasonalityScore: number; // 0-100, 높을수록 계절성 강함
     recommendation: "highly_recommended" | "recommended" | "neutral" | "caution" | "not_recommended";
   };
+  // === 새로운 고급 분석 필드 ===
+  // STL 분해
+  stlDecomposition?: STLDecomposition;
+  // 모멘텀 분석
+  momentum?: MomentumAnalysis;
+  // 이상치 탐지
+  anomalies?: AnomalyDetection;
+  // 앙상블 예측
+  ensemble?: EnsembleForecast;
+  // 정확도 메트릭 (교차 검증 기반)
+  accuracy?: AccuracyMetrics;
 };
 
 /**
@@ -374,6 +436,22 @@ function determineTrendDirection(
 }
 
 /**
+ * 예측 날짜 배열 생성 (마지막 데이터 날짜로부터 n개월 후)
+ */
+function generateForecastDates(lastDataDate: string, count: number): string[] {
+  const dates: string[] = [];
+  const base = new Date(lastDataDate);
+
+  for (let i = 1; i <= count; i++) {
+    const forecastDate = new Date(base);
+    forecastDate.setMonth(forecastDate.getMonth() + i);
+    dates.push(forecastDate.toISOString().slice(0, 10));
+  }
+
+  return dates;
+}
+
+/**
  * 종합 트렌드 분석
  */
 export function analyzeTrend(dataPoints: DataPoint[]): TrendAnalysisResult {
@@ -405,10 +483,10 @@ export function analyzeTrend(dataPoints: DataPoint[]): TrendAnalysisResult {
     data.length >= 6
       ? holtWintersTriple(data, seasonLength)
       : {
-          ...holtWintersDouble(data),
-          seasonalFactors: Array(seasonLength).fill(1),
-          seasonalStrength: 0,
-        };
+        ...holtWintersDouble(data),
+        seasonalFactors: Array(seasonLength).fill(1),
+        seasonalStrength: 0,
+      };
 
   // 4. Mann-Kendall 검정
   const mk = mannKendallTest(data);
@@ -430,6 +508,10 @@ export function analyzeTrend(dataPoints: DataPoint[]): TrendAnalysisResult {
     mk
   );
 
+  // 마지막 데이터 날짜로부터 예측 날짜 생성
+  const lastDataDate = sortedData[sortedData.length - 1]?.period;
+  const hwForecastDates = lastDataDate ? generateForecastDates(lastDataDate, hw.forecast.length) : undefined;
+
   return {
     linearRegression: {
       slope: lr.slope,
@@ -448,6 +530,7 @@ export function analyzeTrend(dataPoints: DataPoint[]): TrendAnalysisResult {
       trend: hw.trend,
       seasonalFactors: hw.seasonalFactors,
       forecast: hw.forecast,
+      forecastDates: hwForecastDates,
       seasonalStrength: hw.seasonalStrength,
     },
     mannKendall: {
@@ -606,4 +689,610 @@ export function formatTrendSummary(
   ];
 
   return lines.join("\n");
+}
+
+// ============================================================
+// 고급 시계열 분석 함수들 (2024-2025 최신 기법)
+// ============================================================
+
+/**
+ * LOESS (Locally Estimated Scatterplot Smoothing) 평활화
+ * 국소 가중 회귀를 사용하여 비선형 트렌드를 추출
+ * @param data 입력 데이터 배열
+ * @param bandwidth 대역폭 (0~1, 클수록 더 평활)
+ */
+export function loessSmooth(
+  data: number[],
+  bandwidth: number = 0.3
+): number[] {
+  const n = data.length;
+  if (n < 3) return [...data];
+
+  const smoothed: number[] = [];
+  const windowSize = Math.max(3, Math.floor(n * bandwidth));
+
+  for (let i = 0; i < n; i++) {
+    // 윈도우 범위 결정
+    const halfWindow = Math.floor(windowSize / 2);
+    const start = Math.max(0, i - halfWindow);
+    const end = Math.min(n - 1, i + halfWindow);
+
+    // 가중치 계산 (tricube 가중 함수)
+    const weights: number[] = [];
+    const values: number[] = [];
+    const maxDist = Math.max(i - start, end - i) || 1;
+
+    for (let j = start; j <= end; j++) {
+      const dist = Math.abs(j - i) / maxDist;
+      const u = Math.min(dist, 1);
+      // Tricube weight: (1 - u^3)^3
+      const weight = Math.pow(1 - Math.pow(u, 3), 3);
+      weights.push(weight);
+      values.push(data[j]);
+    }
+
+    // 가중 평균 계산
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    const weightedSum = values.reduce((sum, val, idx) => sum + val * weights[idx], 0);
+    smoothed.push(totalWeight > 0 ? weightedSum / totalWeight : data[i]);
+  }
+
+  return smoothed;
+}
+
+/**
+ * STL 분해 (Seasonal-Trend decomposition using LOESS)
+ * 시계열을 트렌드, 계절성, 잔차로 분해
+ * @param data 입력 데이터 배열
+ * @param seasonLength 계절 주기 (월별 데이터면 12)
+ * @param iterations 반복 횟수 (기본 2)
+ */
+export function stlDecompose(
+  data: number[],
+  seasonLength: number = 12,
+  iterations: number = 2
+): STLDecomposition {
+  const n = data.length;
+
+  // 데이터가 충분하지 않으면 기본값 반환
+  if (n < seasonLength * 2) {
+    const trend = loessSmooth(data, 0.5);
+    const residual = data.map((v, i) => v - trend[i]);
+    return {
+      trend,
+      seasonal: new Array(n).fill(0),
+      residual,
+      seasonalStrength: 0,
+      trendStrength: calculateStrength(trend, residual),
+    };
+  }
+
+  let seasonal = new Array(n).fill(0);
+  let trend = new Array(n).fill(0);
+  let residual = [...data];
+
+  for (let iter = 0; iter < iterations; iter++) {
+    // 1단계: 계절성 제거 후 트렌드 추출
+    const deseasonalized = data.map((v, i) => v - seasonal[i]);
+    trend = loessSmooth(deseasonalized, 0.5);
+
+    // 2단계: 트렌드 제거 후 계절성 추출
+    const detrended = data.map((v, i) => v - trend[i]);
+
+    // 계절별 평균 계산
+    const seasonalAvg: number[] = new Array(seasonLength).fill(0);
+    const seasonalCount: number[] = new Array(seasonLength).fill(0);
+
+    for (let i = 0; i < n; i++) {
+      const seasonIdx = i % seasonLength;
+      seasonalAvg[seasonIdx] += detrended[i];
+      seasonalCount[seasonIdx]++;
+    }
+
+    for (let s = 0; s < seasonLength; s++) {
+      seasonalAvg[s] = seasonalCount[s] > 0 ? seasonalAvg[s] / seasonalCount[s] : 0;
+    }
+
+    // 계절 효과 중심화 (평균이 0이 되도록)
+    const avgSeasonal = seasonalAvg.reduce((a, b) => a + b, 0) / seasonLength;
+    for (let s = 0; s < seasonLength; s++) {
+      seasonalAvg[s] -= avgSeasonal;
+    }
+
+    // 계절성 배열 구성
+    seasonal = data.map((_, i) => seasonalAvg[i % seasonLength]);
+
+    // 3단계: 잔차 계산
+    residual = data.map((v, i) => v - trend[i] - seasonal[i]);
+  }
+
+  // 계절성 및 트렌드 강도 계산
+  const seasonalStrength = calculateStrength(seasonal, residual);
+  const trendStrength = calculateStrength(trend, residual);
+
+  return {
+    trend,
+    seasonal,
+    residual,
+    seasonalStrength,
+    trendStrength,
+  };
+}
+
+/**
+ * 성분 강도 계산 (0~1)
+ */
+function calculateStrength(component: number[], residual: number[]): number {
+  const varComponent = variance(component);
+  const varResidual = variance(residual);
+  const totalVar = varComponent + varResidual;
+
+  if (totalVar === 0) return 0;
+  return Math.max(0, 1 - varResidual / totalVar);
+}
+
+/**
+ * 분산 계산
+ */
+function variance(data: number[]): number {
+  if (data.length === 0) return 0;
+  const mean = data.reduce((a, b) => a + b, 0) / data.length;
+  return data.reduce((acc, val) => acc + (val - mean) ** 2, 0) / data.length;
+}
+
+/**
+ * 이동평균 계산
+ */
+export function movingAverage(data: number[], window: number): number[] {
+  const result: number[] = [];
+  for (let i = 0; i < data.length; i++) {
+    if (i < window - 1) {
+      // 초기 값들은 가용한 데이터로 평균
+      const slice = data.slice(0, i + 1);
+      result.push(slice.reduce((a, b) => a + b, 0) / slice.length);
+    } else {
+      const slice = data.slice(i - window + 1, i + 1);
+      result.push(slice.reduce((a, b) => a + b, 0) / window);
+    }
+  }
+  return result;
+}
+
+/**
+ * 이상치 탐지 (Z-score 및 IQR 기반)
+ * @param data 입력 데이터 배열
+ * @param threshold Z-score 임계값 (기본 2.5)
+ */
+export function detectAnomalies(
+  data: number[],
+  threshold: number = 2.5
+): AnomalyDetection {
+  const n = data.length;
+  if (n < 5) {
+    return { anomalies: [], cleanedData: [...data], anomalyRatio: 0 };
+  }
+
+  const mean = data.reduce((a, b) => a + b, 0) / n;
+  const std = Math.sqrt(data.reduce((acc, val) => acc + (val - mean) ** 2, 0) / n);
+
+  const anomalies: AnomalyDetection["anomalies"] = [];
+  const cleanedData: number[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const zscore = std > 0 ? (data[i] - mean) / std : 0;
+    if (Math.abs(zscore) > threshold) {
+      anomalies.push({ index: i, value: data[i], zscore });
+      // 이상치는 이전 값으로 대체 (또는 평균)
+      cleanedData.push(i > 0 ? cleanedData[i - 1] : mean);
+    } else {
+      cleanedData.push(data[i]);
+    }
+  }
+
+  return {
+    anomalies,
+    cleanedData,
+    anomalyRatio: anomalies.length / n,
+  };
+}
+
+/**
+ * RSI (Relative Strength Index) 계산
+ * @param data 입력 데이터 배열
+ * @param period RSI 기간 (기본 6)
+ */
+export function calculateRSI(data: number[], period: number = 6): number {
+  if (data.length < period + 1) return 50; // 중립값
+
+  // 가격 변화 계산
+  const changes: number[] = [];
+  for (let i = 1; i < data.length; i++) {
+    changes.push(data[i] - data[i - 1]);
+  }
+
+  // 최근 period 기간의 변화만 사용
+  const recentChanges = changes.slice(-period);
+
+  // 상승/하락 분리
+  let gains = 0;
+  let losses = 0;
+
+  for (const change of recentChanges) {
+    if (change > 0) gains += change;
+    else losses += Math.abs(change);
+  }
+
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+/**
+ * 모멘텀 분석 (이동평균 교차 + RSI)
+ * @param data 입력 데이터 배열
+ * @param shortPeriod 단기 이동평균 기간 (기본 3)
+ * @param longPeriod 장기 이동평균 기간 (기본 6)
+ */
+export function analyzeMomentum(
+  data: number[],
+  shortPeriod: number = 3,
+  longPeriod: number = 6
+): MomentumAnalysis {
+  const n = data.length;
+
+  if (n < longPeriod) {
+    return {
+      shortMA: [...data],
+      longMA: [...data],
+      macd: new Array(n).fill(0),
+      signal: "neutral",
+      crossoverType: "none",
+      rsi: 50,
+      momentum: 0,
+    };
+  }
+
+  const shortMA = movingAverage(data, shortPeriod);
+  const longMA = movingAverage(data, longPeriod);
+  const macd = shortMA.map((v, i) => v - longMA[i]);
+
+  // 교차 타입 판단 (최근 2개 포인트 비교)
+  let crossoverType: MomentumAnalysis["crossoverType"] = "none";
+  if (n >= 2) {
+    const prevDiff = macd[n - 2];
+    const currDiff = macd[n - 1];
+    if (prevDiff <= 0 && currDiff > 0) {
+      crossoverType = "golden_cross"; // 골든 크로스 (매수 신호)
+    } else if (prevDiff >= 0 && currDiff < 0) {
+      crossoverType = "death_cross"; // 데드 크로스 (매도 신호)
+    }
+  }
+
+  // RSI 계산
+  const rsi = calculateRSI(data);
+
+  // 신호 결정
+  let signal: MomentumAnalysis["signal"] = "neutral";
+  const lastMacd = macd[n - 1];
+  if (lastMacd > 0 && rsi > 50) {
+    signal = "bullish";
+  } else if (lastMacd < 0 && rsi < 50) {
+    signal = "bearish";
+  }
+
+  // 현재 모멘텀 (최근 변화율)
+  const momentum = n >= 2 ? (data[n - 1] - data[n - 2]) / (data[n - 2] || 1) * 100 : 0;
+
+  return {
+    shortMA,
+    longMA,
+    macd,
+    signal,
+    crossoverType,
+    rsi,
+    momentum,
+  };
+}
+
+/**
+ * 앙상블 예측 (여러 모델의 가중 평균)
+ * @param data 입력 데이터 배열
+ * @param forecastHorizon 예측 기간 (기본 3)
+ * @param lastDataDate 마지막 데이터 날짜 (YYYY-MM-DD, 기본은 현재 날짜)
+ */
+export function ensembleForecast(
+  data: number[],
+  forecastHorizon: number = 3,
+  lastDataDate?: string
+): EnsembleForecast {
+  const n = data.length;
+
+  // 마지막 데이터 날짜 (기본값: 현재 날짜)
+  const effectiveLastDate = lastDataDate || new Date().toISOString().slice(0, 10);
+  const forecastDates = generateForecastDates(effectiveLastDate, forecastHorizon);
+
+  if (n < 5) {
+    const mean = n > 0 ? data.reduce((a, b) => a + b, 0) / n : 0;
+    const forecast = new Array(forecastHorizon).fill(mean);
+    return {
+      forecast,
+      forecastDates,
+      confidenceInterval: {
+        lower: forecast.map((f) => f * 0.8),
+        upper: forecast.map((f) => f * 1.2),
+      },
+      modelWeights: { naive: 1 },
+      consensusStrength: 1,
+      lastDataDate: effectiveLastDate,
+    };
+  }
+
+  // 1. 선형회귀 예측
+  const lr = linearRegression(data);
+  const lrForecast = Array.from({ length: forecastHorizon }, (_, h) =>
+    lr.slope * (n + h) + lr.intercept
+  );
+
+  // 2. Holt-Winters 예측
+  const hw = holtWintersDouble(data);
+  const hwForecast = hw.forecast.slice(0, forecastHorizon);
+  while (hwForecast.length < forecastHorizon) {
+    hwForecast.push(hwForecast[hwForecast.length - 1] || 0);
+  }
+
+  // 3. 지수평활 예측
+  const es = exponentialSmoothing(data);
+  const esLast = es.smoothed[es.smoothed.length - 1] || 0;
+  const esTrend = es.trend;
+  const esForecast = Array.from({ length: forecastHorizon }, (_, h) =>
+    esLast + esTrend * (h + 1)
+  );
+
+  // 4. 단순 이동평균 예측
+  const ma = movingAverage(data, Math.min(3, n));
+  const maLast = ma[ma.length - 1] || 0;
+  const maForecast = new Array(forecastHorizon).fill(maLast);
+
+  // 가중치 결정 (R² 기반)
+  const weights = {
+    linearRegression: Math.max(0.1, lr.rSquared),
+    holtWinters: 0.3,
+    exponentialSmoothing: 0.25,
+    movingAverage: 0.15,
+  };
+  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
+
+  // 정규화
+  const normalizedWeights: Record<string, number> = {};
+  for (const [key, value] of Object.entries(weights)) {
+    normalizedWeights[key] = value / totalWeight;
+  }
+
+  // 앙상블 예측
+  const forecast: number[] = [];
+  for (let h = 0; h < forecastHorizon; h++) {
+    const weighted =
+      lrForecast[h] * normalizedWeights.linearRegression +
+      hwForecast[h] * normalizedWeights.holtWinters +
+      esForecast[h] * normalizedWeights.exponentialSmoothing +
+      maForecast[h] * normalizedWeights.movingAverage;
+    forecast.push(weighted);
+  }
+
+  // 신뢰구간 (모델 간 표준편차 기반)
+  const confidenceInterval: EnsembleForecast["confidenceInterval"] = {
+    lower: [],
+    upper: [],
+  };
+
+  for (let h = 0; h < forecastHorizon; h++) {
+    const models = [lrForecast[h], hwForecast[h], esForecast[h], maForecast[h]];
+    const modelMean = models.reduce((a, b) => a + b, 0) / models.length;
+    const modelStd = Math.sqrt(
+      models.reduce((acc, m) => acc + (m - modelMean) ** 2, 0) / models.length
+    );
+    confidenceInterval.lower.push(forecast[h] - 1.96 * modelStd);
+    confidenceInterval.upper.push(forecast[h] + 1.96 * modelStd);
+  }
+
+  // 모델 간 합의 정도 (표준편차가 작을수록 합의가 높음)
+  const avgForecast = forecast.reduce((a, b) => a + b, 0) / forecastHorizon;
+  const allModels = [...lrForecast, ...hwForecast, ...esForecast, ...maForecast];
+  const allMean = allModels.reduce((a, b) => a + b, 0) / allModels.length;
+  const allStd = Math.sqrt(
+    allModels.reduce((acc, m) => acc + (m - allMean) ** 2, 0) / allModels.length
+  );
+  const consensusStrength = avgForecast > 0 ? Math.max(0, 1 - allStd / avgForecast) : 0.5;
+
+  return {
+    forecast,
+    forecastDates,
+    confidenceInterval,
+    modelWeights: normalizedWeights,
+    consensusStrength: Math.min(1, Math.max(0, consensusStrength)),
+    lastDataDate: effectiveLastDate,
+  };
+}
+
+/**
+ * 예측 정확도 메트릭 계산 (교차 검증)
+ * @param data 입력 데이터 배열
+ * @param testRatio 테스트 데이터 비율 (기본 0.2)
+ */
+export function calculateAccuracyMetrics(
+  data: number[],
+  testRatio: number = 0.2
+): AccuracyMetrics {
+  const n = data.length;
+  const testSize = Math.max(1, Math.floor(n * testRatio));
+  const trainSize = n - testSize;
+
+  if (trainSize < 3) {
+    return { mape: 0, rmse: 0, mae: 0, mase: 0 };
+  }
+
+  const trainData = data.slice(0, trainSize);
+  const testData = data.slice(trainSize);
+
+  // 훈련 데이터로 모델 적합 및 예측
+  const hw = holtWintersDouble(trainData);
+  const predicted: number[] = [];
+  for (let h = 0; h < testSize; h++) {
+    predicted.push(hw.level + (h + 1) * hw.trend);
+  }
+
+  // 오차 계산
+  const errors: number[] = [];
+  const absErrors: number[] = [];
+  const absPercentErrors: number[] = [];
+  const squaredErrors: number[] = [];
+
+  for (let i = 0; i < testSize; i++) {
+    const actual = testData[i];
+    const pred = predicted[i];
+    const error = actual - pred;
+    errors.push(error);
+    absErrors.push(Math.abs(error));
+    squaredErrors.push(error ** 2);
+    if (actual !== 0) {
+      absPercentErrors.push(Math.abs(error / actual) * 100);
+    }
+  }
+
+  // MAPE
+  const mape =
+    absPercentErrors.length > 0
+      ? absPercentErrors.reduce((a, b) => a + b, 0) / absPercentErrors.length
+      : 0;
+
+  // RMSE
+  const rmse = Math.sqrt(squaredErrors.reduce((a, b) => a + b, 0) / testSize);
+
+  // MAE
+  const mae = absErrors.reduce((a, b) => a + b, 0) / testSize;
+
+  // MASE (Mean Absolute Scaled Error)
+  // 기준: 훈련 데이터의 naive 예측 오차
+  let naiveErrors = 0;
+  for (let i = 1; i < trainSize; i++) {
+    naiveErrors += Math.abs(trainData[i] - trainData[i - 1]);
+  }
+  const naiveMae = naiveErrors / (trainSize - 1);
+  const mase = naiveMae > 0 ? mae / naiveMae : 0;
+
+  return { mape, rmse, mae, mase };
+}
+
+/**
+ * 고급 트렌드 분석 (기존 analyzeTrend + 새로운 분석 추가)
+ */
+export function analyzeAdvancedTrend(dataPoints: DataPoint[]): TrendAnalysisResult {
+  // 기본 분석 수행
+  const baseResult = analyzeTrend(dataPoints);
+
+  const sortedData = [...dataPoints].sort((a, b) =>
+    a.period.localeCompare(b.period)
+  );
+  const data = sortedData.map((d) => d.ratio);
+
+  if (data.length < 5) {
+    return baseResult;
+  }
+
+  // 이상치 탐지
+  const anomalyResult = detectAnomalies(data);
+
+  // 이상치 제거된 데이터로 추가 분석
+  const cleanData = anomalyResult.cleanedData;
+
+  // STL 분해
+  const seasonLength = Math.min(12, Math.floor(data.length / 2));
+  const stl = stlDecompose(cleanData, seasonLength);
+
+  // 모멘텀 분석
+  const momentumResult = analyzeMomentum(cleanData);
+
+  // 앙상블 예측 (마지막 데이터 날짜 전달)
+  const lastDataDate = sortedData[sortedData.length - 1]?.period;
+  const ensembleResult = ensembleForecast(cleanData, 3, lastDataDate);
+
+  // 정확도 메트릭
+  const accuracyResult = calculateAccuracyMetrics(cleanData);
+
+  return {
+    ...baseResult,
+    stlDecomposition: stl,
+    momentum: momentumResult,
+    anomalies: anomalyResult,
+    ensemble: ensembleResult,
+    accuracy: accuracyResult,
+  };
+}
+
+/**
+ * 고급 분석 결과를 한국어 요약으로 변환
+ */
+export function formatAdvancedTrendSummary(
+  keyword: string,
+  result: TrendAnalysisResult
+): string {
+  const baseSummary = formatTrendSummary(keyword, result);
+
+  const advancedLines: string[] = [];
+
+  if (result.momentum) {
+    const momentumKor: Record<string, string> = {
+      bullish: "상승 모멘텀",
+      bearish: "하락 모멘텀",
+      neutral: "중립",
+    };
+    const crossKor: Record<string, string> = {
+      golden_cross: "골든 크로스 (매수 신호)",
+      death_cross: "데드 크로스 (매도 신호)",
+      none: "없음",
+    };
+    advancedLines.push(
+      `\n[모멘텀 분석]`,
+      `신호: ${momentumKor[result.momentum.signal]}`,
+      `RSI: ${result.momentum.rsi.toFixed(1)}`,
+      `교차: ${crossKor[result.momentum.crossoverType]}`
+    );
+  }
+
+  if (result.stlDecomposition) {
+    advancedLines.push(
+      `\n[STL 분해]`,
+      `트렌드 강도: ${(result.stlDecomposition.trendStrength * 100).toFixed(0)}%`,
+      `계절성 강도: ${(result.stlDecomposition.seasonalStrength * 100).toFixed(0)}%`
+    );
+  }
+
+  if (result.anomalies && result.anomalies.anomalies.length > 0) {
+    advancedLines.push(
+      `\n[이상치]`,
+      `탐지된 이상치: ${result.anomalies.anomalies.length}개 (${(result.anomalies.anomalyRatio * 100).toFixed(1)}%)`
+    );
+  }
+
+  if (result.ensemble) {
+    advancedLines.push(
+      `\n[앙상블 예측]`,
+      `예측값: ${result.ensemble.forecast.map((f) => f.toFixed(1)).join(" → ")}`,
+      `모델 합의도: ${(result.ensemble.consensusStrength * 100).toFixed(0)}%`
+    );
+  }
+
+  if (result.accuracy) {
+    advancedLines.push(
+      `\n[정확도 메트릭]`,
+      `MAPE: ${result.accuracy.mape.toFixed(1)}%`,
+      `RMSE: ${result.accuracy.rmse.toFixed(2)}`,
+      `MASE: ${result.accuracy.mase.toFixed(2)}`
+    );
+  }
+
+  return baseSummary + advancedLines.join("\n");
 }
