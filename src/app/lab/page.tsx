@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, LogOut, Sparkles } from "lucide-react";
+import { ArrowRight, ExternalLink, LogOut, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
@@ -55,6 +55,13 @@ const renderGrowthLabel = (g: number | null) => {
   if (pct > -20) return `완만한 감소 (${pct.toFixed(1)}%)`;
   return `강한 감소 (${pct.toFixed(1)}%)`;
 };
+
+// 외부 쇼핑 플랫폼 검색 URL 생성 함수
+const getSearchUrls = (keyword: string) => ({
+  coupang: `https://www.coupang.com/np/search?q=${encodeURIComponent(keyword)}`,
+  taobao: `https://s.taobao.com/search?q=${encodeURIComponent(keyword)}`,
+  alibaba1688: `https://s.1688.com/selloffer/offer_search.htm?keywords=${encodeURIComponent(keyword)}`,
+});
 
 const defaultFocusTags: string[] = [];
 
@@ -136,6 +143,7 @@ export default function LabPage() {
     string | null
   >(null);
   const [showKeywordInsights, setShowKeywordInsights] = useState(true);
+  const [activeSearchPopup, setActiveSearchPopup] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // 네이버 데이터랩/마켓 분석용 파라미터
@@ -190,6 +198,14 @@ export default function LabPage() {
     setDateFrom(fromStr);
     setDateTo(toStr);
   }, []);
+
+  // 검색 링크 팝업 외부 클릭 시 닫기
+  useEffect(() => {
+    if (!activeSearchPopup) return;
+    const handleClickOutside = () => setActiveSearchPopup(null);
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, [activeSearchPopup]);
 
   const handleLogout = async () => {
     if (!supabase) return;
@@ -733,33 +749,97 @@ export default function LabPage() {
                     </button>
                   </div>
                   <div className="mt-3 grid gap-2 md:grid-cols-2">
-                    {keywordInsights.items.map((item) => (
-                      <button
-                        key={item.keyword}
-                        type="button"
-                        onClick={() => setInsightSeriesKeyword(item.keyword)}
-                        className="flex flex-col items-start rounded-xl border border-amber-100 bg-white/80 px-3 py-2 text-left shadow-sm transition hover:border-amber-300 hover:shadow-md"
-                      >
-                        <div className="flex w-full items-center justify-between gap-2">
-                          <p className="text-xs font-semibold text-slate-900">
-                            {item.keyword}
-                          </p>
-                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
-                            {renderGrowthLabel(item.growthRatio)}
-                          </span>
+                    {keywordInsights.items.map((item) => {
+                      const searchUrls = getSearchUrls(item.keyword);
+                      const isPopupOpen = activeSearchPopup === item.keyword;
+                      return (
+                        <div key={item.keyword} className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setInsightSeriesKeyword(item.keyword)}
+                            className="flex w-full flex-col items-start rounded-xl border border-amber-100 bg-white/80 px-3 py-2 text-left shadow-sm transition hover:border-amber-300 hover:shadow-md"
+                          >
+                            <div className="flex w-full items-center justify-between gap-2">
+                              <p className="text-xs font-semibold text-slate-900">
+                                {item.keyword}
+                              </p>
+                              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                                {renderGrowthLabel(item.growthRatio)}
+                              </span>
+                            </div>
+                            <div className="mt-1 grid w-full grid-cols-3 gap-2 text-[10px] text-slate-600">
+                              <span>평균: {item.avgRatio.toFixed(1)}</span>
+                              <span>최근: {item.recentAvgRatio.toFixed(1)}</span>
+                              <span>
+                                피크:{" "}
+                                {item.peakMonths.length
+                                  ? item.peakMonths.map((m) => `${m}월`).join(", ")
+                                  : "패턴 없음"}
+                              </span>
+                            </div>
+                          </button>
+                          {/* 검색 링크 버튼 */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveSearchPopup(isPopupOpen ? null : item.keyword);
+                            }}
+                            className="absolute right-1 top-1 rounded-full border border-amber-200 bg-amber-50 p-1 text-amber-700 transition hover:bg-amber-100"
+                            title="외부 쇼핑몰에서 검색"
+                            aria-label={`${item.keyword} 외부 검색 링크 열기`}
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                          </button>
+                          {/* 검색 링크 팝업 */}
+                          {isPopupOpen && (
+                            <div className="absolute right-0 top-8 z-10 w-48 rounded-lg border border-amber-200 bg-white p-2 shadow-lg">
+                              <p className="mb-2 text-[10px] font-semibold text-slate-600">
+                                &quot;{item.keyword}&quot; 검색하기
+                              </p>
+                              <div className="space-y-1">
+                                <a
+                                  href={searchUrls.coupang}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] font-medium text-slate-700 transition hover:bg-amber-50"
+                                  onClick={() => setActiveSearchPopup(null)}
+                                >
+                                  <span className="flex h-5 w-5 items-center justify-center rounded bg-red-500 text-[9px] font-bold text-white">
+                                    C
+                                  </span>
+                                  쿠팡에서 검색
+                                </a>
+                                <a
+                                  href={searchUrls.taobao}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] font-medium text-slate-700 transition hover:bg-orange-50"
+                                  onClick={() => setActiveSearchPopup(null)}
+                                >
+                                  <span className="flex h-5 w-5 items-center justify-center rounded bg-orange-500 text-[9px] font-bold text-white">
+                                    T
+                                  </span>
+                                  타오바오에서 검색
+                                </a>
+                                <a
+                                  href={searchUrls.alibaba1688}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] font-medium text-slate-700 transition hover:bg-yellow-50"
+                                  onClick={() => setActiveSearchPopup(null)}
+                                >
+                                  <span className="flex h-5 w-5 items-center justify-center rounded bg-yellow-500 text-[9px] font-bold text-white">
+                                    16
+                                  </span>
+                                  1688에서 검색
+                                </a>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div className="mt-1 grid w-full grid-cols-3 gap-2 text-[10px] text-slate-600">
-                          <span>평균: {item.avgRatio.toFixed(1)}</span>
-                          <span>최근: {item.recentAvgRatio.toFixed(1)}</span>
-                          <span>
-                            피크:{" "}
-                            {item.peakMonths.length
-                              ? item.peakMonths.map((m) => `${m}월`).join(", ")
-                              : "패턴 없음"}
-                          </span>
-                        </div>
-                      </button>
-                    ))}
+                      );
+                    })}
                   </div>
                   {/* 2) 선택된 키워드 상세 시계열 (ML 분석 포함) */}
                   {insightSeriesKeyword && (

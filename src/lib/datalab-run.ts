@@ -48,15 +48,31 @@ export type KeywordStats = {
   trendAnalysis?: TrendAnalysisResult;
 };
 
-export type KeywordAnalysisResult = {
-  analysisRunId: number | null;
+/**
+ * 단일 카테고리에 대한 분석 결과
+ */
+export type CategoryAnalysisResult = {
+  categoryName: string;
   categoryId: string;
-  startDate: string;
-  endDate: string;
-  timeUnit: "month";
   keywords: string[];
   metrics: Record<string, KeywordStats>;
   series: Record<string, KeywordPoint[]>;
+};
+
+/**
+ * 전체 분석 결과 (여러 카테고리 지원)
+ */
+export type KeywordAnalysisResult = {
+  analysisRunId: number | null;
+  categoryId: string; // 대표 카테고리 (첫 번째) - 하위 호환성 유지
+  startDate: string;
+  endDate: string;
+  timeUnit: "month";
+  keywords: string[]; // 모든 카테고리의 키워드 통합
+  metrics: Record<string, KeywordStats>; // 모든 카테고리의 metrics 통합
+  series: Record<string, KeywordPoint[]>; // 모든 카테고리의 series 통합
+  // 새로운 필드: 카테고리별 상세 결과
+  categoryResults?: CategoryAnalysisResult[];
 };
 
 const CATEGORY_TO_CID: Record<string, string> = {
@@ -200,10 +216,123 @@ function buildKeywordStats(
 }
 
 /**
+ * 단일 카테고리에 대한 Top 키워드 추출 및 분석을 수행한다.
+ */
+async function analyzeOneCategory({
+  categoryName,
+  categoryId,
+  startDate,
+  endDate,
+  timeUnit,
+  deviceCode,
+  genderCode,
+  ageCodes,
+}: {
+  categoryName: string;
+  categoryId: string;
+  startDate: string;
+  endDate: string;
+  timeUnit: "month";
+  deviceCode: "" | "pc" | "mo";
+  genderCode: "" | "m" | "f";
+  ageCodes: string[];
+}): Promise<CategoryAnalysisResult | null> {
+  // 1) 네이버 쇼핑인사이트 Top 키워드 상위 N개 추출
+  const { ranks, meta } = await fetchTopKeywords({
+    cid: categoryId,
+    timeUnit,
+    startDate,
+    endDate,
+    device: deviceCode,
+    gender: genderCode,
+    age: ageCodes.join(","),
+  });
+
+  if (!ranks || ranks.length === 0) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[Datalab][top-keywords] empty ranks", {
+        categoryName,
+        cid: categoryId,
+        startDate,
+        endDate,
+        timeUnit,
+        device: deviceCode,
+        gender: genderCode,
+        age: ageCodes.join(","),
+        meta,
+      });
+    }
+    return null;
+  }
+
+  let keywords = ranks
+    .slice(0, 10)
+    .map((r) => normalizeNaverKeyword(r.keyword))
+    .filter((kw, idx, arr) => kw && arr.indexOf(kw) === idx);
+
+  if (process.env.NODE_ENV !== "production" && ranks.length > 0) {
+    console.log("[Datalab][top-keywords] normalized sample", {
+      categoryName,
+      cid: categoryId,
+      startDate,
+      endDate,
+      timeUnit,
+      device: deviceCode,
+      gender: genderCode,
+      age: ageCodes.join(","),
+      rawSample: ranks.slice(0, 10).map((r) => r.keyword),
+      normalizedKeywords: keywords,
+    });
+  }
+
+  // normalize 과정에서 모두 빈 문자열이 되어버린 경우, 원본 키워드 사용
+  if ((!keywords || keywords.length === 0) && ranks.length > 0) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error(
+        "[Datalab][top-keywords] normalized keywords empty, falling back to raw keywords",
+        {
+          categoryName,
+          sampleRaw: ranks.slice(0, 10).map((r) => r.keyword),
+        },
+      );
+    }
+
+    keywords = ranks
+      .slice(0, 10)
+      .map((r) => r.keyword.trim())
+      .filter((kw, idx, arr) => kw && arr.indexOf(kw) === idx);
+  }
+
+  if (!keywords.length) {
+    return null;
+  }
+
+  // 2) 카테고리/키워드 트렌드 API 호출로 시계열 + 통계 계산
+  const { metrics, series } = await runCategoryKeywordTrendAnalysis({
+    categoryId,
+    startDate,
+    endDate,
+    timeUnit,
+    deviceCode,
+    genderCode,
+    ageCodes,
+    keywords,
+  });
+
+  return {
+    categoryName,
+    categoryId,
+    keywords,
+    metrics,
+    series,
+  };
+}
+
+/**
  * 하나의 DataLab 분석 트랜잭션을 수행한다.
+ * 여러 카테고리가 선택된 경우, 각 카테고리별로 Top 키워드 추출 및 트렌드 분석을 수행한다.
  *
- * 1) 카테고리/기간/타깃 조건을 바탕으로
- *    쇼핑인사이트 Top 키워드 상위 N개를 크롤링한다.
+ * 1) 각 카테고리별로 쇼핑인사이트 Top 키워드 상위 N개를 크롤링한다.
  * 2) 정제된 키워드를 Naver DataLab 카테고리/키워드 API에 넣어
  *    시계열 데이터를 가져온 뒤 성장성·계절성 지표를 계산한다.
  * 3) analysis_runs 테이블에 실행 로그를 남기고,
@@ -218,95 +347,80 @@ export async function runKeywordAnalysisTransaction(
   const endDate = dateTo;
   const timeUnit = "month" as const;
 
-  const firstCategory = categories[0] ?? "생활잡화";
-  const categoryId = CATEGORY_TO_CID[firstCategory] ?? "50000007";
-
   const deviceCode = mapDeviceToApi(devices);
   const genderCode = mapGenderToApi(gender);
   const ageCodes = mapAgesToApi(ageBuckets);
 
-  // 1) 네이버 쇼핑인사이트 Top 키워드 상위 N개 추출
-  const { ranks, meta } = await fetchTopKeywords({
-    cid: categoryId,
-    timeUnit,
-    startDate,
-    endDate,
-    device: deviceCode,
-    gender: genderCode,
-    age: ageCodes.join(","),
-  });
+  // 선택된 카테고리들 처리 (최소 1개 보장)
+  const selectedCategories = categories.length > 0 ? categories : ["생활/건강"];
 
-  if (!ranks || ranks.length === 0) {
+  // 각 카테고리별로 분석 수행
+  const categoryResults: CategoryAnalysisResult[] = [];
+
+  for (const categoryName of selectedCategories) {
+    const categoryId = CATEGORY_TO_CID[categoryName] ?? "50000007";
+
     if (process.env.NODE_ENV !== "production") {
-      // 테스트 페이지에서는 잘 동작하지만, 특정 환경/기간 조합에서
-      // Top 키워드가 비어 있는 경우가 있어 디버깅을 쉽게 하기 위해 남겨둡니다.
-      console.error("[Datalab][top-keywords] empty ranks", {
-        cid: categoryId,
-        startDate,
-        endDate,
-        timeUnit,
-        device: deviceCode,
-        gender: genderCode,
-        age: ageCodes.join(","),
-        meta,
-      });
+      console.log(`[Datalab] Analyzing category: ${categoryName} (${categoryId})`);
     }
-  }
 
-  let keywords = ranks
-    .slice(0, 10)
-    .map((r) => normalizeNaverKeyword(r.keyword))
-    .filter((kw, idx, arr) => kw && arr.indexOf(kw) === idx);
-
-  if (process.env.NODE_ENV !== "production" && ranks && ranks.length > 0) {
-    console.log("[Datalab][top-keywords] normalized sample", {
-      cid: categoryId,
+    const result = await analyzeOneCategory({
+      categoryName,
+      categoryId,
       startDate,
       endDate,
       timeUnit,
-      device: deviceCode,
-      gender: genderCode,
-      age: ageCodes.join(","),
-      rawSample: ranks.slice(0, 10).map((r) => r.keyword),
-      normalizedKeywords: keywords,
+      deviceCode,
+      genderCode,
+      ageCodes,
     });
-  }
 
-  // 혹시 normalize 과정에서 모두 빈 문자열이 되어버린 경우,
-  // 원본 키워드를 한 번 더 사용해본다.
-  if ((!keywords || keywords.length === 0) && ranks && ranks.length > 0) {
-    if (process.env.NODE_ENV !== "production") {
-      console.error(
-        "[Datalab][top-keywords] normalized keywords empty, falling back to raw keywords",
-        {
-          sampleRaw: ranks.slice(0, 10).map((r) => r.keyword),
-        },
-      );
+    if (result) {
+      categoryResults.push(result);
     }
-
-    keywords = ranks
-      .slice(0, 10)
-      .map((r) => r.keyword.trim())
-      .filter((kw, idx, arr) => kw && arr.indexOf(kw) === idx);
   }
 
-  // Top 키워드를 하나도 가져오지 못했다면 트랜잭션을 실패로 처리.
-  // 프론트/챗봇에서는 이 에러 메시지를 보고 기간/카테고리 조정을 유도한다.
-  if (!keywords.length) {
-    throw new Error("네이버 Top 키워드에서 분석 대상 키워드를 찾지 못했습니다.");
+  // 모든 카테고리에서 키워드를 가져오지 못한 경우
+  if (categoryResults.length === 0) {
+    throw new Error(
+      "선택된 카테고리에서 분석 대상 키워드를 찾지 못했습니다. 기간이나 카테고리를 조정해주세요."
+    );
   }
 
-  // 2) 카테고리/키워드 트렌드 API 호출로 시계열 + 통계 계산
-  const { metrics, series } = await runCategoryKeywordTrendAnalysis({
-    categoryId,
-    startDate,
-    endDate,
-    timeUnit,
-    deviceCode,
-    genderCode,
-    ageCodes,
-    keywords,
-  });
+  // 모든 카테고리의 결과를 통합
+  const allKeywords: string[] = [];
+  const allMetrics: Record<string, KeywordStats> = {};
+  const allSeries: Record<string, KeywordPoint[]> = {};
+
+  for (const catResult of categoryResults) {
+    // 키워드에 카테고리 표시 추가 (중복 방지)
+    for (const kw of catResult.keywords) {
+      const keyWithCategory = categoryResults.length > 1
+        ? `[${catResult.categoryName}] ${kw}`
+        : kw;
+
+      if (!allKeywords.includes(keyWithCategory)) {
+        allKeywords.push(keyWithCategory);
+      }
+
+      // metrics와 series도 카테고리 표시와 함께 저장
+      if (catResult.metrics[kw]) {
+        const metricKey = categoryResults.length > 1 ? keyWithCategory : kw;
+        allMetrics[metricKey] = {
+          ...catResult.metrics[kw],
+          keyword: metricKey,
+        };
+      }
+
+      if (catResult.series[kw]) {
+        const seriesKey = categoryResults.length > 1 ? keyWithCategory : kw;
+        allSeries[seriesKey] = catResult.series[kw];
+      }
+    }
+  }
+
+  // 대표 카테고리 (첫 번째 성공한 카테고리)
+  const primaryCategoryId = categoryResults[0].categoryId;
 
   // 3) analysis_runs 테이블에 요약 파라미터 + Top 키워드 저장
   let analysisRunId: number | null = null;
@@ -324,7 +438,7 @@ export async function runKeywordAnalysisTransaction(
         gender_scope: [gender],
         age_buckets: ageBuckets,
         categories,
-        top_keywords: keywords,
+        top_keywords: allKeywords,
         started_at: new Date().toISOString(),
         finished_at: new Date().toISOString(),
       })
@@ -336,15 +450,27 @@ export async function runKeywordAnalysisTransaction(
     }
   }
 
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[Datalab] Analysis complete:`, {
+      categoriesAnalyzed: categoryResults.map(c => c.categoryName),
+      totalKeywords: allKeywords.length,
+      keywordsByCategory: categoryResults.map(c => ({
+        category: c.categoryName,
+        count: c.keywords.length,
+      })),
+    });
+  }
+
   return {
     analysisRunId,
-    categoryId,
+    categoryId: primaryCategoryId,
     startDate,
     endDate,
     timeUnit,
-    keywords,
-    metrics,
-    series,
+    keywords: allKeywords,
+    metrics: allMetrics,
+    series: allSeries,
+    categoryResults,
   };
 }
 
@@ -435,6 +561,7 @@ async function runCategoryKeywordTrendAnalysis({
 
 /**
  * 사용자가 지정한 키워드 배열을 기준으로 DataLab 분석 트랜잭션을 수행한다.
+ * 여러 카테고리가 선택된 경우, 각 카테고리별로 동일한 키워드에 대한 트렌드 분석을 수행한다.
  * - Top 키워드를 전혀 사용하지 않고, 전달된 키워드만 카테고리/키워드 API에 넣어 분석한다.
  */
 export async function runKeywordAnalysisForExplicitKeywords(
@@ -446,9 +573,6 @@ export async function runKeywordAnalysisForExplicitKeywords(
   const startDate = dateFrom;
   const endDate = dateTo;
   const timeUnit = "month" as const;
-
-  const firstCategory = categories[0] ?? "생활잡화";
-  const categoryId = CATEGORY_TO_CID[firstCategory] ?? "50000007";
 
   const deviceCode = mapDeviceToApi(devices);
   const genderCode = mapGenderToApi(gender);
@@ -466,16 +590,85 @@ export async function runKeywordAnalysisForExplicitKeywords(
     throw new Error("분석할 키워드를 찾지 못했습니다. 최소 1개 이상의 키워드를 선택해주세요.");
   }
 
-  const { metrics, series } = await runCategoryKeywordTrendAnalysis({
-    categoryId,
-    startDate,
-    endDate,
-    timeUnit,
-    deviceCode,
-    genderCode,
-    ageCodes,
-    keywords,
-  });
+  // 선택된 카테고리들 처리 (최소 1개 보장)
+  const selectedCategories = categories.length > 0 ? categories : ["생활/건강"];
+
+  // 각 카테고리별로 분석 수행
+  const categoryResults: CategoryAnalysisResult[] = [];
+
+  for (const categoryName of selectedCategories) {
+    const categoryId = CATEGORY_TO_CID[categoryName] ?? "50000007";
+
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[Datalab][explicit] Analyzing category: ${categoryName} (${categoryId}) with keywords:`, keywords);
+    }
+
+    try {
+      const { metrics, series } = await runCategoryKeywordTrendAnalysis({
+        categoryId,
+        startDate,
+        endDate,
+        timeUnit,
+        deviceCode,
+        genderCode,
+        ageCodes,
+        keywords,
+      });
+
+      categoryResults.push({
+        categoryName,
+        categoryId,
+        keywords,
+        metrics,
+        series,
+      });
+    } catch (err) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error(`[Datalab][explicit] Error analyzing category ${categoryName}:`, err);
+      }
+      // 개별 카테고리 실패는 무시하고 계속 진행
+    }
+  }
+
+  // 모든 카테고리에서 분석 실패한 경우
+  if (categoryResults.length === 0) {
+    throw new Error(
+      "선택된 카테고리에서 키워드 분석에 실패했습니다. 키워드나 카테고리를 조정해주세요."
+    );
+  }
+
+  // 모든 카테고리의 결과를 통합
+  const allKeywords: string[] = [];
+  const allMetrics: Record<string, KeywordStats> = {};
+  const allSeries: Record<string, KeywordPoint[]> = {};
+
+  for (const catResult of categoryResults) {
+    for (const kw of Object.keys(catResult.metrics)) {
+      const keyWithCategory = categoryResults.length > 1
+        ? `[${catResult.categoryName}] ${kw}`
+        : kw;
+
+      if (!allKeywords.includes(keyWithCategory)) {
+        allKeywords.push(keyWithCategory);
+      }
+
+      if (catResult.metrics[kw]) {
+        const metricKey = categoryResults.length > 1 ? keyWithCategory : kw;
+        allMetrics[metricKey] = {
+          ...catResult.metrics[kw],
+          keyword: metricKey,
+        };
+      }
+
+      if (catResult.series[kw]) {
+        const seriesKey = categoryResults.length > 1 ? keyWithCategory : kw;
+        allSeries[seriesKey] = catResult.series[kw];
+      }
+    }
+  }
+
+  // 대표 카테고리 (첫 번째 성공한 카테고리)
+  const primaryCategoryId = categoryResults[0].categoryId;
 
   let analysisRunId: number | null = null;
   const supabase = getSupabaseClient();
@@ -492,7 +685,7 @@ export async function runKeywordAnalysisForExplicitKeywords(
         gender_scope: [gender],
         age_buckets: ageBuckets,
         categories,
-        top_keywords: keywords,
+        top_keywords: allKeywords,
         started_at: new Date().toISOString(),
         finished_at: new Date().toISOString(),
       })
@@ -504,14 +697,26 @@ export async function runKeywordAnalysisForExplicitKeywords(
     }
   }
 
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[Datalab][explicit] Analysis complete:`, {
+      categoriesAnalyzed: categoryResults.map(c => c.categoryName),
+      totalKeywords: allKeywords.length,
+      keywordsByCategory: categoryResults.map(c => ({
+        category: c.categoryName,
+        count: Object.keys(c.metrics).length,
+      })),
+    });
+  }
+
   return {
     analysisRunId,
-    categoryId,
+    categoryId: primaryCategoryId,
     startDate,
     endDate,
     timeUnit,
-    keywords,
-    metrics,
-    series,
+    keywords: allKeywords,
+    metrics: allMetrics,
+    series: allSeries,
+    categoryResults,
   };
 }
