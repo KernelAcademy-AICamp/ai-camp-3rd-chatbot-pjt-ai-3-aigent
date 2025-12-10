@@ -733,6 +733,8 @@ export default function KeywordToolsPage() {
                         series={result.series[m.keyword] ?? []}
                         metrics={m}
                         timeUnit={result.timeUnit}
+                        startDate={result.startDate}
+                        endDate={result.endDate}
                       />
                     ))}
                 </div>

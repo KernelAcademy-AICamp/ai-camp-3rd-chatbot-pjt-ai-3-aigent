@@ -891,6 +891,8 @@ export default function LabPage() {
                                       | "week"
                                       | "month"
                                   }
+                                  startDate={keywordInsights.startDate}
+                                  endDate={keywordInsights.endDate}
                                 />
                               ) : (
                                 <div className="h-56">
@@ -1027,6 +1029,8 @@ export default function LabPage() {
                                       | "week"
                                       | "month"
                                   }
+                                  startDate={keywordInsights.startDate}
+                                  endDate={keywordInsights.endDate}
                                 />
                               ));
                             })()}

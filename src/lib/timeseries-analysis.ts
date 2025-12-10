@@ -1557,3 +1557,627 @@ function calculateModelWeights(
     return { hw: 0.25, arima: 0.45, ma: 0.3 };
   }
 }
+
+// ============================================================
+// 최신 머신러닝 시계열 예측 모델 (2024-2025)
+// ============================================================
+
+/**
+ * Theta 모델 예측 결과 타입
+ */
+export type ThetaForecast = {
+  forecast: number[];
+  forecastDates: string[];
+  theta: number; // Theta 파라미터
+  drift: number; // 드리프트 (기울기)
+};
+
+/**
+ * Prophet 스타일 분해 결과 타입
+ */
+export type ProphetStyleDecomposition = {
+  trend: number[];
+  seasonality: number[];
+  holidays: number[]; // 이상치/특이점
+  forecast: number[];
+  forecastDates: string[];
+  trendChangePoints: number[]; // 트렌드 변화점 인덱스
+  growthRate: number; // 성장률
+};
+
+/**
+ * 다이나믹 앙상블 예측 결과 타입
+ */
+export type DynamicEnsembleForecast = {
+  forecast: number[];
+  forecastDates: string[];
+  confidenceInterval: { lower: number[]; upper: number[] };
+  modelContributions: {
+    theta: number;
+    prophet: number;
+    holtWinters: number;
+    arima: number;
+  };
+  adaptiveWeights: number[]; // 기간별 적응형 가중치
+  predictionInterval: { p10: number[]; p90: number[] };
+};
+
+/**
+ * 자동 계절 주기 탐지
+ * ACF (자기상관함수) 기반으로 최적의 계절 주기를 찾음
+ * @param data 입력 데이터 배열
+ * @param maxLag 최대 지연 (기본 24)
+ */
+export function detectSeasonalPeriod(data: number[], maxLag: number = 24): {
+  period: number;
+  strength: number;
+  acfValues: number[];
+} {
+  const n = data.length;
+  if (n < 8) {
+    return { period: 0, strength: 0, acfValues: [] };
+  }
+
+  const mean = data.reduce((a, b) => a + b, 0) / n;
+  const variance = data.reduce((acc, val) => acc + (val - mean) ** 2, 0) / n;
+
+  if (variance === 0) {
+    return { period: 0, strength: 0, acfValues: [] };
+  }
+
+  // ACF 계산
+  const acfValues: number[] = [];
+  const effectiveMaxLag = Math.min(maxLag, Math.floor(n / 2));
+
+  for (let lag = 1; lag <= effectiveMaxLag; lag++) {
+    let sum = 0;
+    for (let i = 0; i < n - lag; i++) {
+      sum += (data[i] - mean) * (data[i + lag] - mean);
+    }
+    acfValues.push(sum / (n * variance));
+  }
+
+  // 피크 찾기 (로컬 최대값)
+  const peaks: { lag: number; acf: number }[] = [];
+  for (let i = 1; i < acfValues.length - 1; i++) {
+    if (acfValues[i] > acfValues[i - 1] && acfValues[i] > acfValues[i + 1]) {
+      if (acfValues[i] > 0.2) { // 임계값
+        peaks.push({ lag: i + 1, acf: acfValues[i] });
+      }
+    }
+  }
+
+  if (peaks.length === 0) {
+    return { period: 0, strength: 0, acfValues };
+  }
+
+  // 가장 강한 피크 선택
+  peaks.sort((a, b) => b.acf - a.acf);
+  const bestPeak = peaks[0];
+
+  return {
+    period: bestPeak.lag,
+    strength: bestPeak.acf,
+    acfValues,
+  };
+}
+
+/**
+ * Theta 모델 예측
+ * M3 경쟁에서 우수한 성능을 보인 단순하고 강력한 모델
+ * @param data 입력 데이터 배열
+ * @param forecastHorizon 예측 기간
+ * @param theta Theta 파라미터 (기본 2, 0이면 SES, 무한대면 선형)
+ * @param lastDataDate 마지막 데이터 날짜
+ */
+export function thetaForecast(
+  data: number[],
+  forecastHorizon: number = 3,
+  theta: number = 2,
+  lastDataDate?: string
+): ThetaForecast {
+  const n = data.length;
+  const forecastDates = lastDataDate
+    ? generateForecastDates(lastDataDate, forecastHorizon)
+    : [];
+
+  if (n < 3) {
+    const mean = n > 0 ? data.reduce((a, b) => a + b, 0) / n : 0;
+    return {
+      forecast: Array(forecastHorizon).fill(mean),
+      forecastDates,
+      theta,
+      drift: 0,
+    };
+  }
+
+  // 1. 데이터 차분으로 드리프트 추정
+  let driftSum = 0;
+  for (let i = 1; i < n; i++) {
+    driftSum += data[i] - data[i - 1];
+  }
+  const drift = driftSum / (n - 1);
+
+  // 2. 지수평활 (SES) 적용
+  const alpha = 0.3; // 평활 계수
+  const ses = exponentialSmoothing(data, alpha);
+  const sesLast = ses.smoothed[ses.smoothed.length - 1];
+
+  // 3. Theta 라인 결합
+  // Theta 모델: SES 예측 + theta * drift * h
+  const forecast: number[] = [];
+  for (let h = 1; h <= forecastHorizon; h++) {
+    // Theta 가중 예측
+    const thetaValue = sesLast + (theta / 2) * drift * h;
+    forecast.push(Math.max(0, thetaValue)); // 음수 방지
+  }
+
+  return {
+    forecast,
+    forecastDates,
+    theta,
+    drift,
+  };
+}
+
+/**
+ * Prophet 스타일 분해 및 예측
+ * Facebook Prophet의 핵심 아이디어를 단순화하여 구현
+ * y(t) = g(t) + s(t) + h(t) + ε
+ * @param data 입력 데이터 배열
+ * @param forecastHorizon 예측 기간
+ * @param lastDataDate 마지막 데이터 날짜
+ */
+export function prophetStyleForecast(
+  data: number[],
+  forecastHorizon: number = 3,
+  lastDataDate?: string
+): ProphetStyleDecomposition {
+  const n = data.length;
+  const forecastDates = lastDataDate
+    ? generateForecastDates(lastDataDate, forecastHorizon)
+    : [];
+
+  if (n < 6) {
+    const mean = n > 0 ? data.reduce((a, b) => a + b, 0) / n : 0;
+    return {
+      trend: [...data],
+      seasonality: new Array(n).fill(0),
+      holidays: new Array(n).fill(0),
+      forecast: Array(forecastHorizon).fill(mean),
+      forecastDates,
+      trendChangePoints: [],
+      growthRate: 0,
+    };
+  }
+
+  // 1. 트렌드 변화점 탐지 (Piecewise Linear Trend)
+  const trendChangePoints = detectTrendChangePoints(data);
+
+  // 2. 구간별 선형 트렌드 추출
+  const trend = extractPiecewiseTrend(data, trendChangePoints);
+
+  // 3. 트렌드 제거 후 계절성 추출
+  const detrended = data.map((v, i) => v - trend[i]);
+  const seasonalPeriod = detectSeasonalPeriod(data);
+  const seasonality = extractSeasonality(detrended, seasonalPeriod.period || 12);
+
+  // 4. 이상치/특이점 추출 (트렌드+계절성 제거 후 잔차)
+  const holidays = data.map((v, i) => v - trend[i] - seasonality[i]);
+
+  // 5. 성장률 계산
+  const growthRate = n > 1 ? (data[n - 1] - data[0]) / data[0] / n : 0;
+
+  // 6. 예측 생성
+  const forecast = generateProphetForecast(
+    trend,
+    seasonality,
+    trendChangePoints,
+    forecastHorizon,
+    n
+  );
+
+  return {
+    trend,
+    seasonality,
+    holidays,
+    forecast,
+    forecastDates,
+    trendChangePoints,
+    growthRate,
+  };
+}
+
+/**
+ * 트렌드 변화점 탐지
+ * PELT (Pruned Exact Linear Time) 알고리즘의 단순화 버전
+ */
+function detectTrendChangePoints(data: number[], maxChangePoints: number = 3): number[] {
+  const n = data.length;
+  if (n < 10) return [];
+
+  const changePoints: number[] = [];
+  const windowSize = Math.max(3, Math.floor(n / 5));
+
+  // 슬라이딩 윈도우로 기울기 변화 탐지
+  const slopes: number[] = [];
+  for (let i = windowSize; i < n - windowSize; i++) {
+    const leftSlope = calculateSlope(data.slice(i - windowSize, i));
+    const rightSlope = calculateSlope(data.slice(i, i + windowSize));
+    slopes.push(Math.abs(rightSlope - leftSlope));
+  }
+
+  // 상위 변화점 선택
+  const threshold = Math.max(...slopes) * 0.5;
+  for (let i = 0; i < slopes.length && changePoints.length < maxChangePoints; i++) {
+    if (slopes[i] > threshold) {
+      const point = i + windowSize;
+      // 이전 변화점과 최소 거리 유지
+      if (changePoints.length === 0 || point - changePoints[changePoints.length - 1] > windowSize) {
+        changePoints.push(point);
+      }
+    }
+  }
+
+  return changePoints;
+}
+
+/**
+ * 기울기 계산 헬퍼
+ */
+function calculateSlope(segment: number[]): number {
+  const n = segment.length;
+  if (n < 2) return 0;
+  const lr = linearRegression(segment);
+  return lr.slope;
+}
+
+/**
+ * 구간별 선형 트렌드 추출
+ */
+function extractPiecewiseTrend(data: number[], changePoints: number[]): number[] {
+  const n = data.length;
+  const trend: number[] = new Array(n);
+
+  // 변화점으로 구간 분할
+  const segments = [0, ...changePoints, n];
+
+  for (let s = 0; s < segments.length - 1; s++) {
+    const start = segments[s];
+    const end = segments[s + 1];
+    const segment = data.slice(start, end);
+    const lr = linearRegression(segment);
+
+    for (let i = start; i < end; i++) {
+      trend[i] = lr.slope * (i - start) + lr.intercept;
+    }
+  }
+
+  return trend;
+}
+
+/**
+ * 계절성 추출
+ */
+function extractSeasonality(detrended: number[], period: number): number[] {
+  const n = detrended.length;
+  const seasonality: number[] = new Array(n).fill(0);
+
+  if (period <= 0 || n < period) return seasonality;
+
+  // 계절별 평균 계산
+  const seasonalMeans: number[] = new Array(period).fill(0);
+  const seasonalCounts: number[] = new Array(period).fill(0);
+
+  for (let i = 0; i < n; i++) {
+    const seasonIdx = i % period;
+    seasonalMeans[seasonIdx] += detrended[i];
+    seasonalCounts[seasonIdx]++;
+  }
+
+  for (let s = 0; s < period; s++) {
+    seasonalMeans[s] = seasonalCounts[s] > 0 ? seasonalMeans[s] / seasonalCounts[s] : 0;
+  }
+
+  // 중심화 (평균이 0이 되도록)
+  const meanSeasonal = seasonalMeans.reduce((a, b) => a + b, 0) / period;
+  for (let s = 0; s < period; s++) {
+    seasonalMeans[s] -= meanSeasonal;
+  }
+
+  // 계절성 배열 구성
+  for (let i = 0; i < n; i++) {
+    seasonality[i] = seasonalMeans[i % period];
+  }
+
+  return seasonality;
+}
+
+/**
+ * Prophet 스타일 예측 생성
+ */
+function generateProphetForecast(
+  trend: number[],
+  seasonality: number[],
+  changePoints: number[],
+  forecastHorizon: number,
+  n: number
+): number[] {
+  // 마지막 구간의 트렌드 기울기 사용
+  const lastChangePoint = changePoints.length > 0 ? changePoints[changePoints.length - 1] : 0;
+  const lastSegment = trend.slice(lastChangePoint);
+  const lastSlope = calculateSlope(lastSegment);
+  const lastTrend = trend[n - 1];
+
+  // 계절 주기
+  const period = seasonality.length > 0 ? detectSeasonalPeriod(seasonality).period || 12 : 12;
+
+  const forecast: number[] = [];
+  for (let h = 1; h <= forecastHorizon; h++) {
+    const futureTrend = lastTrend + lastSlope * h;
+    const futureSeason = seasonality[(n + h - 1) % period] || 0;
+    forecast.push(Math.max(0, futureTrend + futureSeason));
+  }
+
+  return forecast;
+}
+
+/**
+ * 다이나믹 앙상블 예측 (최신 기법)
+ * 여러 모델의 예측을 동적 가중치로 결합
+ * @param data 입력 데이터 배열
+ * @param forecastHorizon 예측 기간
+ * @param lastDataDate 마지막 데이터 날짜
+ */
+export async function dynamicEnsembleForecast(
+  data: number[],
+  forecastHorizon: number = 3,
+  lastDataDate?: string
+): Promise<DynamicEnsembleForecast> {
+  const n = data.length;
+  const forecastDates = lastDataDate
+    ? generateForecastDates(lastDataDate, forecastHorizon)
+    : [];
+
+  if (n < 6) {
+    const mean = n > 0 ? data.reduce((a, b) => a + b, 0) / n : 0;
+    return {
+      forecast: Array(forecastHorizon).fill(mean),
+      forecastDates,
+      confidenceInterval: {
+        lower: Array(forecastHorizon).fill(mean * 0.8),
+        upper: Array(forecastHorizon).fill(mean * 1.2),
+      },
+      modelContributions: { theta: 0.25, prophet: 0.25, holtWinters: 0.25, arima: 0.25 },
+      adaptiveWeights: Array(forecastHorizon).fill(1),
+      predictionInterval: {
+        p10: Array(forecastHorizon).fill(mean * 0.7),
+        p90: Array(forecastHorizon).fill(mean * 1.3),
+      },
+    };
+  }
+
+  // 1. 각 모델 예측 수집
+  const thetaResult = thetaForecast(data, forecastHorizon, 2, lastDataDate);
+  const prophetResult = prophetStyleForecast(data, forecastHorizon, lastDataDate);
+  const hwResult = holtWintersTriple(data, Math.min(12, Math.floor(n / 2)));
+
+  // Holt-Winters 예측 확장
+  const hwForecast = [...hwResult.forecast];
+  while (hwForecast.length < forecastHorizon) {
+    hwForecast.push(hwForecast[hwForecast.length - 1] || 0);
+  }
+
+  // ARIMA 예측 (비동기)
+  let arimaForecastValues: number[];
+  try {
+    const arimaResult = await arimaForecast(data, forecastHorizon, lastDataDate, { auto: true });
+    arimaForecastValues = arimaResult.forecast;
+  } catch {
+    arimaForecastValues = thetaResult.forecast; // 폴백
+  }
+
+  // 2. 모델 성능 기반 가중치 계산 (백테스팅)
+  const weights = computeDynamicWeights(data, {
+    theta: thetaResult.forecast,
+    prophet: prophetResult.forecast,
+    holtWinters: hwForecast.slice(0, forecastHorizon),
+    arima: arimaForecastValues,
+  });
+
+  // 3. 가중 앙상블 예측
+  const forecast: number[] = [];
+  const adaptiveWeights: number[] = [];
+
+  for (let h = 0; h < forecastHorizon; h++) {
+    // 기간별 적응형 가중치 (먼 미래일수록 불확실성 증가)
+    const uncertaintyFactor = 1 + h * 0.1;
+    adaptiveWeights.push(1 / uncertaintyFactor);
+
+    const weighted =
+      weights.theta * (thetaResult.forecast[h] ?? 0) +
+      weights.prophet * (prophetResult.forecast[h] ?? 0) +
+      weights.holtWinters * (hwForecast[h] ?? 0) +
+      weights.arima * (arimaForecastValues[h] ?? 0);
+
+    forecast.push(Math.max(0, weighted));
+  }
+
+  // 4. 신뢰구간 및 예측구간 계산
+  const { confidenceInterval, predictionInterval } = calculateIntervals(
+    forecast,
+    [thetaResult.forecast, prophetResult.forecast, hwForecast, arimaForecastValues],
+    data
+  );
+
+  return {
+    forecast,
+    forecastDates,
+    confidenceInterval,
+    modelContributions: weights,
+    adaptiveWeights,
+    predictionInterval,
+  };
+}
+
+/**
+ * 다이나믹 가중치 계산 (백테스팅 기반)
+ */
+function computeDynamicWeights(
+  data: number[],
+  forecasts: {
+    theta: number[];
+    prophet: number[];
+    holtWinters: number[];
+    arima: number[];
+  }
+): { theta: number; prophet: number; holtWinters: number; arima: number } {
+  const n = data.length;
+  if (n < 8) {
+    return { theta: 0.25, prophet: 0.25, holtWinters: 0.25, arima: 0.25 };
+  }
+
+  // 백테스트: 마지막 20%를 테스트 세트로 사용
+  const testSize = Math.max(2, Math.floor(n * 0.2));
+  const trainData = data.slice(0, -testSize);
+  const testData = data.slice(-testSize);
+
+  // 각 모델의 훈련 데이터 예측
+  const thetaTrain = thetaForecast(trainData, testSize);
+  const prophetTrain = prophetStyleForecast(trainData, testSize);
+  const hwTrain = holtWintersTriple(trainData, Math.min(12, Math.floor(trainData.length / 2)));
+
+  // MAE 계산
+  const errors = {
+    theta: calculateMAE(testData, thetaTrain.forecast.slice(0, testSize)),
+    prophet: calculateMAE(testData, prophetTrain.forecast.slice(0, testSize)),
+    holtWinters: calculateMAE(testData, hwTrain.forecast.slice(0, testSize)),
+    arima: calculateMAE(testData, forecasts.arima.slice(0, testSize)),
+  };
+
+  // 에러의 역수로 가중치 계산 (에러가 작을수록 높은 가중치)
+  const inverseErrors = {
+    theta: 1 / (errors.theta + 0.01),
+    prophet: 1 / (errors.prophet + 0.01),
+    holtWinters: 1 / (errors.holtWinters + 0.01),
+    arima: 1 / (errors.arima + 0.01),
+  };
+
+  const totalInverse =
+    inverseErrors.theta +
+    inverseErrors.prophet +
+    inverseErrors.holtWinters +
+    inverseErrors.arima;
+
+  return {
+    theta: inverseErrors.theta / totalInverse,
+    prophet: inverseErrors.prophet / totalInverse,
+    holtWinters: inverseErrors.holtWinters / totalInverse,
+    arima: inverseErrors.arima / totalInverse,
+  };
+}
+
+/**
+ * MAE 계산 헬퍼
+ */
+function calculateMAE(actual: number[], predicted: number[]): number {
+  const n = Math.min(actual.length, predicted.length);
+  if (n === 0) return Infinity;
+
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum += Math.abs(actual[i] - (predicted[i] ?? actual[i]));
+  }
+  return sum / n;
+}
+
+/**
+ * 신뢰구간 및 예측구간 계산
+ */
+function calculateIntervals(
+  forecast: number[],
+  modelForecasts: number[][],
+  data: number[]
+): {
+  confidenceInterval: { lower: number[]; upper: number[] };
+  predictionInterval: { p10: number[]; p90: number[] };
+} {
+  const h = forecast.length;
+
+  // 모델 간 표준편차 (인식론적 불확실성)
+  const modelStd: number[] = [];
+  for (let i = 0; i < h; i++) {
+    const values = modelForecasts.map((m) => m[i] ?? forecast[i]);
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const variance = values.reduce((acc, v) => acc + (v - mean) ** 2, 0) / values.length;
+    modelStd.push(Math.sqrt(variance));
+  }
+
+  // 데이터 변동성 (우연적 불확실성)
+  const dataStd = Math.sqrt(
+    data.reduce((acc, v) => {
+      const mean = data.reduce((a, b) => a + b, 0) / data.length;
+      return acc + (v - mean) ** 2;
+    }, 0) / data.length
+  );
+
+  // 신뢰구간 (95%)
+  const confidenceInterval = {
+    lower: forecast.map((f, i) => f - 1.96 * modelStd[i]),
+    upper: forecast.map((f, i) => f + 1.96 * modelStd[i]),
+  };
+
+  // 예측구간 (80%) - 시간에 따라 증가
+  const predictionInterval = {
+    p10: forecast.map((f, i) => f - 1.28 * (modelStd[i] + dataStd * Math.sqrt(i + 1))),
+    p90: forecast.map((f, i) => f + 1.28 * (modelStd[i] + dataStd * Math.sqrt(i + 1))),
+  };
+
+  return { confidenceInterval, predictionInterval };
+}
+
+/**
+ * 최신 고급 트렌드 분석 (기존 + 새로운 모델 포함)
+ */
+export async function analyzeLatestTrend(dataPoints: DataPoint[]): Promise<TrendAnalysisResult & {
+  thetaForecast?: ThetaForecast;
+  prophetDecomposition?: ProphetStyleDecomposition;
+  dynamicEnsemble?: DynamicEnsembleForecast;
+  detectedSeasonality?: { period: number; strength: number };
+}> {
+  // 기존 고급 분석 수행
+  const baseResult = analyzeAdvancedTrend(dataPoints);
+
+  const sortedData = [...dataPoints].sort((a, b) =>
+    a.period.localeCompare(b.period)
+  );
+  const data = sortedData.map((d) => d.ratio);
+  const lastDataDate = sortedData[sortedData.length - 1]?.period;
+
+  if (data.length < 6) {
+    return baseResult;
+  }
+
+  // 계절성 탐지
+  const detectedSeasonality = detectSeasonalPeriod(data);
+
+  // Theta 모델 예측
+  const thetaResult = thetaForecast(data, 3, 2, lastDataDate);
+
+  // Prophet 스타일 분해
+  const prophetResult = prophetStyleForecast(data, 3, lastDataDate);
+
+  // 다이나믹 앙상블 예측
+  const dynamicResult = await dynamicEnsembleForecast(data, 3, lastDataDate);
+
+  return {
+    ...baseResult,
+    thetaForecast: thetaResult,
+    prophetDecomposition: prophetResult,
+    dynamicEnsemble: dynamicResult,
+    detectedSeasonality: {
+      period: detectedSeasonality.period,
+      strength: detectedSeasonality.strength,
+    },
+  };
+}

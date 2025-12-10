@@ -350,6 +350,8 @@ export default function Home() {
                 series={demoSeries}
                 metrics={demoMetrics["충전식 손난로"] as any}
                 timeUnit="month"
+                startDate="2024-07-01"
+                endDate="2024-12-31"
               />
             </div>
           </div>

@@ -119,10 +119,15 @@ export function GrowthScoreComparisonChart({
 }) {
   const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
 
+  // 키워드 최대 표시 길이 (15자까지 표시)
+  const MAX_KEYWORD_LENGTH = 15;
+
   const data = Object.values(metrics)
     .filter((m) => m.trendAnalysis)
     .map((m) => ({
-      keyword: m.keyword.length > 8 ? m.keyword.slice(0, 8) + "..." : m.keyword,
+      keyword: m.keyword.length > MAX_KEYWORD_LENGTH
+        ? m.keyword.slice(0, MAX_KEYWORD_LENGTH) + "..."
+        : m.keyword,
       fullKeyword: m.keyword,
       growthScore: m.trendAnalysis?.overallScore.growthScore ?? 0,
       stabilityScore: m.trendAnalysis?.overallScore.stabilityScore ?? 0,
@@ -131,6 +136,10 @@ export function GrowthScoreComparisonChart({
     .sort((a, b) => b.growthScore - a.growthScore);
 
   if (data.length === 0) return null;
+
+  // Y축 너비를 키워드 길이에 따라 동적으로 계산 (글자당 약 7px + 여백)
+  const maxKeywordDisplayLength = Math.max(...data.map(d => d.keyword.length));
+  const yAxisWidth = Math.min(200, Math.max(100, maxKeywordDisplayLength * 7 + 20));
 
   const handleBarClick = (data: any) => {
     if (data?.activePayload?.[0]?.payload) {
@@ -157,11 +166,11 @@ export function GrowthScoreComparisonChart({
           </button>
         </p>
       )}
-      <ResponsiveContainer width="100%" height={Math.max(300, data.length * 35 + 50)}>
+      <ResponsiveContainer width="100%" height={Math.max(300, data.length * 40 + 50)}>
         <BarChart
           data={data}
           layout="vertical"
-          margin={{ left: 20, right: 20, bottom: 30 }}
+          margin={{ left: 10, right: 20, bottom: 30 }}
           onClick={handleBarClick}
         >
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -170,7 +179,8 @@ export function GrowthScoreComparisonChart({
             dataKey="keyword"
             type="category"
             tick={{ fontSize: 11 }}
-            width={80}
+            width={yAxisWidth}
+            tickFormatter={(value) => value}
           />
           <Tooltip
             content={({ active, payload }) => {
@@ -234,11 +244,15 @@ export function TimeSeriesForecastChart({
   series,
   metrics,
   timeUnit,
+  startDate,
+  endDate,
 }: {
   keyword: string;
   series: SeriesPoint[];
   metrics: KeywordMetrics;
   timeUnit: string;
+  startDate?: string;
+  endDate?: string;
 }) {
   const ta = metrics.trendAnalysis;
 
@@ -266,6 +280,10 @@ export function TimeSeriesForecastChart({
     return period.slice(5);
   };
 
+  // 현재 날짜 기준
+  const today = new Date();
+  const currentPeriodStr = today.toISOString().slice(0, 10);
+
   // 실제 데이터
   const actualData = series.map((p, idx) => ({
     period: formatDate(p.period),
@@ -275,26 +293,81 @@ export function TimeSeriesForecastChart({
     forecast: null as number | null,
   }));
 
+  // 마지막 실제 데이터 시점
+  const lastPeriod = series[series.length - 1]?.period ?? "";
+  const lastPeriodDate = new Date(lastPeriod);
+
+  // 마지막 실제 데이터의 값 (예측 연결용)
+  const lastActualValue = series[series.length - 1]?.ratio ?? 0;
+  const lastTrendIndex = series.length - 1;
+
+  // 마지막 데이터 시점부터 현재까지 + 현재부터 3개월 후까지 예측 기간 계산
+  const futureDate = new Date(today);
+  futureDate.setMonth(futureDate.getMonth() + 3);
+
+  // 예측이 필요한 총 기간 수 계산
+  let totalForecastPeriods = 0;
+  if (timeUnit === "month") {
+    const monthsDiff = (futureDate.getFullYear() - lastPeriodDate.getFullYear()) * 12
+      + (futureDate.getMonth() - lastPeriodDate.getMonth());
+    totalForecastPeriods = Math.max(0, monthsDiff);
+  } else if (timeUnit === "week") {
+    const weeksDiff = Math.ceil((futureDate.getTime() - lastPeriodDate.getTime()) / (7 * 24 * 60 * 60 * 1000));
+    totalForecastPeriods = Math.max(0, weeksDiff);
+  } else {
+    const daysDiff = Math.ceil((futureDate.getTime() - lastPeriodDate.getTime()) / (24 * 60 * 60 * 1000));
+    totalForecastPeriods = Math.max(0, daysDiff);
+  }
+
+  // Holt-Winters 예측값 확장 (기존 예측값 + 추가 예측)
+  const extendedForecast: number[] = [];
+  const existingForecast = ta.holtWinters.forecast;
+  const lastExistingForecast = existingForecast[existingForecast.length - 1] ?? lastActualValue;
+  const forecastTrend = ta.holtWinters.trend;
+  const seasonalFactors = ta.holtWinters.seasonalFactors;
+
+  for (let i = 0; i < totalForecastPeriods; i++) {
+    if (i < existingForecast.length) {
+      extendedForecast.push(existingForecast[i]);
+    } else {
+      // 기존 예측값 이후는 트렌드와 계절성을 이용해 외삽
+      const seasonIdx = seasonalFactors.length > 0
+        ? (series.length + i) % seasonalFactors.length
+        : 0;
+      const seasonalFactor = seasonalFactors[seasonIdx] ?? 1;
+      const extrapolatedValue = lastExistingForecast + forecastTrend * (i - existingForecast.length + 1);
+      extendedForecast.push(Math.max(0, extrapolatedValue * seasonalFactor));
+    }
+  }
+
   // 연속성을 위해 마지막 실제 데이터 포인트의 forecast 값을 설정
   if (actualData.length > 0) {
     const lastActual = actualData[actualData.length - 1];
     lastActual.forecast = lastActual.actual;
   }
 
-  // 예측 데이터 추가
-  const lastPeriod = series[series.length - 1]?.period ?? "";
-  const forecastData = ta.holtWinters.forecast.map((f, idx) => {
+  // 예측 데이터 생성 (마지막 데이터 시점부터 현재+3개월까지)
+  const forecastData = extendedForecast.map((f, idx) => {
     const nextPeriod = getNextPeriod(lastPeriod, idx + 1, timeUnit);
+    const nextPeriodDate = new Date(nextPeriod);
+    const isCurrentPeriod = timeUnit === "month"
+      ? nextPeriodDate.getFullYear() === today.getFullYear() && nextPeriodDate.getMonth() === today.getMonth()
+      : nextPeriod === currentPeriodStr;
+
     return {
       period: formatDate(nextPeriod),
       actual: null,
       smoothed: null,
-      trend: null,
+      trend: ta.linearRegression.slope * (lastTrendIndex + idx + 1) + ta.linearRegression.intercept,
       forecast: f,
+      isCurrentPeriod,
     };
   });
 
-  const chartData = [...actualData, ...forecastData];
+  const chartData = [...actualData.map(d => ({ ...d, isCurrentPeriod: false })), ...forecastData];
+
+  // 현재 시점 표시용 period 찾기
+  const currentPeriodFormatted = formatDate(currentPeriodStr);
 
   // 드래그 줌 핸들러
   const handleMouseDown = (e: any) => {
@@ -358,7 +431,7 @@ export function TimeSeriesForecastChart({
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-slate-900">
           {keyword} - 시계열 분석 & 예측
         </h3>
@@ -377,6 +450,17 @@ export function TimeSeriesForecastChart({
           </span>
         </div>
       </div>
+
+      {/* 분석 기간 표시 */}
+      {(startDate || endDate) && (
+        <p className="text-[11px] text-slate-600 mb-2">
+          <span className="font-medium text-slate-700">분석 기간:</span>{" "}
+          {startDate ?? "N/A"} ~ {endDate ?? "N/A"}
+          <span className="ml-2 text-slate-400">
+            ({timeUnit === "month" ? "월별" : timeUnit === "week" ? "주별" : "일별"} 데이터)
+          </span>
+        </p>
+      )}
 
       {/* 줌 안내 */}
       <p className="text-[10px] text-slate-400 mb-2">
@@ -471,18 +555,34 @@ export function TimeSeriesForecastChart({
             connectNulls={false}
           />
 
-          {/* 예측 구간 구분선 */}
+          {/* 실제 데이터 종료 구분선 */}
           <ReferenceLine
             x={formatDate(lastPeriod)}
             stroke={COLORS.purple}
             strokeDasharray="3 3"
             label={{
-              value: "예측",
+              value: "실측 종료",
               position: "top",
               fontSize: 10,
               fill: COLORS.purple,
             }}
           />
+
+          {/* 현재 시점 구분선 */}
+          {chartData.some(d => d.period === currentPeriodFormatted) && (
+            <ReferenceLine
+              x={currentPeriodFormatted}
+              stroke={COLORS.danger}
+              strokeWidth={2}
+              strokeDasharray="4 2"
+              label={{
+                value: "현재",
+                position: "top",
+                fontSize: 10,
+                fill: COLORS.danger,
+              }}
+            />
+          )}
 
           {/* 드래그 줌 영역 표시 */}
           {zoomState.refAreaLeft && zoomState.refAreaRight && (
@@ -524,9 +624,9 @@ export function TimeSeriesForecastChart({
           </p>
         </div>
         <div className="rounded-lg bg-slate-50 p-2">
-          <p className="text-slate-500">향후 예측</p>
+          <p className="text-slate-500">향후 3개월 예측</p>
           <p className="font-semibold text-slate-900">
-            {ta.holtWinters.forecast.map((f) => f.toFixed(0)).join(" → ")}
+            {extendedForecast.slice(-3).map((f) => f.toFixed(0)).join(" → ")}
           </p>
         </div>
         <div className="rounded-lg bg-slate-50 p-2">
