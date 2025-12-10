@@ -749,7 +749,11 @@ export default function LabPage() {
                     </button>
                   </div>
                   <div className="mt-3 grid gap-2 md:grid-cols-2">
-                    {keywordInsights.items.map((item) => {
+                    {keywordInsights.items
+                      .filter((item, index, self) =>
+                        index === self.findIndex((t) => t.keyword === item.keyword)
+                      )
+                      .map((item) => {
                       const searchUrls = getSearchUrls(item.keyword);
                       const isPopupOpen = activeSearchPopup === item.keyword;
                       return (

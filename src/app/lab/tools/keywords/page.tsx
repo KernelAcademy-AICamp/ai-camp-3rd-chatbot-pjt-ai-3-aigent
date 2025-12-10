@@ -642,7 +642,7 @@ export default function KeywordToolsPage() {
                       <a
                         href={coupangUrl}
                         target="_blank"
-                        rel="noreferrer"
+                        rel="noopener noreferrer"
                         className="rounded-full bg-slate-900 px-2.5 py-0.5 font-semibold text-white shadow-sm transition hover:bg-slate-800"
                       >
                         쿠팡 검색
@@ -650,7 +650,7 @@ export default function KeywordToolsPage() {
                       <a
                         href={marketplace1688Url}
                         target="_blank"
-                        rel="noreferrer"
+                        rel="noopener noreferrer"
                         className="rounded-full border border-slate-300 px-2.5 py-0.5 font-semibold text-slate-700 transition hover:border-amber-300 hover:text-amber-700"
                       >
                         1688 검색
@@ -658,7 +658,7 @@ export default function KeywordToolsPage() {
                       <a
                         href={taobaoUrl}
                         target="_blank"
-                        rel="noreferrer"
+                        rel="noopener noreferrer"
                         className="rounded-full border border-slate-300 px-2.5 py-0.5 font-semibold text-slate-700 transition hover:border-amber-300 hover:text-amber-700"
                       >
                         타오바오 검색
