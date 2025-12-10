@@ -658,9 +658,9 @@ export function OverallScoreRadarChart({
               <span className="text-slate-500">추천</span>
               <span
                 className="px-1.5 py-0.5 rounded text-white"
-                style={{ backgroundColor: RECOMMENDATION_COLORS[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "hold"] }}
+                style={{ backgroundColor: RECOMMENDATION_COLORS[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "neutral"] }}
               >
-                {RECOMMENDATION_KOR[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "hold"]}
+                {RECOMMENDATION_KOR[activeKeywordData.trendAnalysis?.overallScore.recommendation ?? "neutral"]}
               </span>
             </div>
           </div>
@@ -668,15 +668,15 @@ export function OverallScoreRadarChart({
             <a
               href={`https://www.coupang.com/np/search?channel=user&q=${encodeURIComponent(activeKeyword || "")}`}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
+              aria-label={`${activeKeyword} 쿠팡에서 검색 (새 탭에서 열림)`}
               className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-2 py-1 text-[10px] font-semibold text-white hover:bg-slate-800"
             >
               쿠팡 검색 ↗
             </a>
           </div>
-        </div >
-      )
-      }
+        </div>
+      )}
 
       <ResponsiveContainer width="100%" height={320}>
         <RadarChart data={radarData}>
@@ -711,7 +711,7 @@ export function OverallScoreRadarChart({
           <Tooltip />
         </RadarChart>
       </ResponsiveContainer>
-    </div >
+    </div>
   );
 }
 
